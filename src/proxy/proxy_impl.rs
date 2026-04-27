@@ -14,10 +14,11 @@ use pingora_core::Result as PingoraResult;
 use pingora_core::upstreams::peer::{ALPN, HttpPeer, Peer};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
+use crate::config::BackendRouter;
+use crate::config::BackendInfo;
 use crate::convert::StreamState;
-use crate::providers::Provider;
 
 /// Proxy context attached to each request session.
 #[derive(Debug)]
@@ -28,8 +29,8 @@ pub struct ProxyContext {
     pub request_body: Vec<u8>,
     /// Model name parsed from request.
     pub model: Option<String>,
-    /// Selected backend host.
-    pub backend_host: Option<String>,
+    /// Selected backend for this request.
+    pub selected_backend: Option<BackendInfo>,
     /// Provider name.
     pub provider_name: Option<String>,
     /// Stream state for SSE conversion.
@@ -49,7 +50,7 @@ impl ProxyContext {
             start_time: Instant::now(),
             request_body: Vec::new(),
             model: None,
-            backend_host: None,
+            selected_backend: None,
             provider_name: None,
             stream_state: None,
             response_body: Vec::new(),
@@ -61,16 +62,8 @@ impl ProxyContext {
 
 /// Codex proxy handler implementing ProxyHttp trait.
 pub struct CodexProxy {
-    /// Provider for request/response transformation.
-    pub provider: Arc<dyn Provider>,
-    /// Upstream host.
-    pub upstream_host: String,
-    /// Upstream port.
-    pub upstream_port: u16,
-    /// Whether to use TLS.
-    pub use_tls: bool,
-    /// API key for authentication.
-    pub api_key: String,
+    /// Backend router for multi-backend routing.
+    pub router: Arc<BackendRouter>,
     /// Whether to log request/response bodies.
     pub log_body: bool,
 }
@@ -78,32 +71,13 @@ pub struct CodexProxy {
 impl CodexProxy {
     /// Create a new CodexProxy instance.
     pub fn new(
-        provider: Arc<dyn Provider>,
-        upstream_url: &str,
-        api_key: &str,
+        router: Arc<BackendRouter>,
         log_body: bool,
     ) -> Self {
-        let uri = upstream_url
-            .parse::<http::Uri>()
-            .unwrap_or_else(|_| http::Uri::from_static("http://localhost:443"));
-        let scheme = uri.scheme().map(|s| s.as_str()).unwrap_or("http");
-        let host = uri.host().unwrap_or("localhost").to_string();
-        let port = uri.port_u16().unwrap_or(443);
-        let use_tls = scheme == "https";
-
         Self {
-            provider,
-            upstream_host: host,
-            upstream_port: port,
-            use_tls,
-            api_key: api_key.to_string(),
+            router,
             log_body,
         }
-    }
-
-    /// Get the provider name.
-    pub fn provider_name(&self) -> &'static str {
-        self.provider.name()
     }
 }
 
@@ -125,12 +99,34 @@ impl ProxyHttp for CodexProxy {
         Self::CTX: Send + Sync,
     {
         let method = session.req_header().method.as_str().to_string();
-        let uri = session.req_header().uri.to_string();
+        let path = session.req_header().uri.path().to_string();
 
-        ctx.provider_name = Some(self.provider_name().to_string());
-        ctx.backend_host = Some(self.upstream_host.clone());
+        // Collect headers for routing
+        let headers: Vec<(String, String)> = session
+            .req_header()
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_string(),
+                    value.to_str().unwrap_or("<binary>").to_string(),
+                )
+            })
+            .collect();
 
-        debug!("[REQUEST] {} {} (provider: {})", method, uri, self.provider_name());
+        // Select backend using router
+        let backend = match self.router.select(&path, &headers) {
+            Some(b) => b,
+            None => {
+                warn!("[REQUEST] No matching backend for path: {}", path);
+                return Err(pingora_core::Error::new_str("No matching backend"));
+            }
+        };
+
+        ctx.selected_backend = Some(backend.clone());
+        ctx.provider_name = Some(backend.name.clone());
+
+        debug!("[REQUEST] {} {} -> {}", method, path, backend.name);
 
         // Return false to continue processing
         Ok(false)
@@ -142,12 +138,15 @@ impl ProxyHttp for CodexProxy {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> PingoraResult<Box<HttpPeer>> {
-        ctx.backend_host = Some(self.upstream_host.clone());
+        let backend = ctx.selected_backend.as_ref().ok_or_else(|| {
+            error!("No backend selected");
+            pingora_core::Error::new_str("No backend selected")
+        })?;
 
         let mut peer = HttpPeer::new(
-            (self.upstream_host.as_str(), self.upstream_port),
-            self.use_tls,
-            self.upstream_host.clone(),
+            (backend.host.as_str(), backend.port),
+            backend.use_tls,
+            backend.host.clone(),
         );
 
         // HTTP/2 priority
@@ -163,7 +162,7 @@ impl ProxyHttp for CodexProxy {
             count: 5,
         });
 
-        if self.use_tls {
+        if backend.use_tls {
             peer.options.h2_ping_interval = Some(Duration::from_secs(30));
         }
 
@@ -177,6 +176,11 @@ impl ProxyHttp for CodexProxy {
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> PingoraResult<()> {
+        let backend = ctx.selected_backend.as_ref().ok_or_else(|| {
+            error!("No backend selected");
+            pingora_core::Error::new_str("No backend selected")
+        })?;
+
         let original_uri = session.req_header().uri.clone();
         let path = original_uri.path().to_string();
         let query = original_uri.query();
@@ -206,9 +210,9 @@ impl ProxyHttp for CodexProxy {
         upstream_request.remove_header("x-api-key");
         upstream_request.remove_header("authorization");
 
-        // Inject API key for this provider
+        // Inject API key for this backend
         upstream_request
-            .insert_header("authorization", &format!("Bearer {}", self.api_key))
+            .insert_header("authorization", &format!("Bearer {}", backend.api_key))
             .map_err(|e| {
                 error!("Failed to inject authorization header: {}", e);
                 pingora_core::Error::new_str("Header injection failed")
@@ -216,16 +220,17 @@ impl ProxyHttp for CodexProxy {
 
         // Set host header
         upstream_request
-            .insert_header("host", &self.upstream_host)
+            .insert_header("host", &backend.host)
             .map_err(|e| {
                 error!("Failed to set host header: {}", e);
                 pingora_core::Error::new_str("Host header failed")
             })?;
 
         debug!(
-            "[UPSTREAM] {} {}",
+            "[UPSTREAM] {} {} -> {}",
             upstream_request.method.as_str(),
-            upstream_request.uri
+            upstream_request.uri,
+            backend.name
         );
 
         Ok(())
@@ -344,18 +349,22 @@ impl ProxyHttp for CodexProxy {
         #[cfg(unix)] _fd: std::os::unix::io::RawFd,
         #[cfg(windows)] _sock: std::os::windows::io::RawSocket,
         digest: Option<&Digest>,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> PingoraResult<()> {
         let tls_version = digest
             .and_then(|d| d.ssl_digest.as_ref())
             .map(|ssl| ssl.version.to_string())
             .unwrap_or_else(|| "none".to_string());
 
+        let use_tls = ctx.selected_backend.as_ref().map(|b| b.use_tls).unwrap_or(false);
+        let backend_name = ctx.provider_name.as_deref().unwrap_or("unknown");
+
         info!(
-            "[CONNECT] {} -> {} (TLS={}, reused={}, tls_version={})",
+            "[CONNECT] {} -> {} (backend={}, TLS={}, reused={}, tls_version={})",
             peer.sni(),
             peer.address(),
-            self.use_tls,
+            backend_name,
+            use_tls,
             reused,
             tls_version
         );
@@ -369,7 +378,7 @@ impl ProxyHttp for CodexProxy {
         peer: &HttpPeer,
         _session: &mut Session,
         e: Box<pingora_core::Error>,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<pingora_core::Error> {
         error!(
@@ -378,7 +387,7 @@ impl ProxyHttp for CodexProxy {
             e
         );
 
-        let mut e = e.more_context(format!("Provider: {}", self.provider_name()));
+        let mut e = e.more_context(format!("Provider: {}", ctx.provider_name.as_deref().unwrap_or("unknown")));
         e.retry.decide_reuse(false);
         e
     }
@@ -438,19 +447,22 @@ impl ProxyHttp for CodexProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{BackendConfig, MatchRules};
 
     #[test]
     fn test_proxy_creation() {
-        let provider = crate::providers::GLMProvider;
-        let proxy = CodexProxy::new(
-            Arc::new(provider),
-            "https://api.example.com:443",
-            "test-api-key",
-            true,
-        );
-        assert_eq!(proxy.upstream_host, "api.example.com");
-        assert_eq!(proxy.upstream_port, 443);
-        assert!(proxy.use_tls);
-        assert_eq!(proxy.provider_name(), "glm");
+        let configs = vec![BackendConfig {
+            name: "glm".to_string(),
+            url: "https://api.example.com".to_string(),
+            api_key: "test-key".to_string(),
+            protocol: "openai".to_string(),
+            match_rules: MatchRules {
+                default: true,
+                ..Default::default()
+            },
+        }];
+        let router = Arc::new(BackendRouter::new(configs).unwrap());
+        let proxy = CodexProxy::new(router, true);
+        assert!(proxy.log_body);
     }
 }
