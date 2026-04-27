@@ -71,6 +71,50 @@ fn extract_reasoning_content(_message: &ChatMessage) -> Option<String> {
     None
 }
 
+/// Parse &lt;thought&gt; tags from content and extract reasoning text.
+///
+/// Returns (actual_content, reasoning_text) where reasoning_text is the content
+/// inside &lt;thought&gt;...&lt;/thought&gt; tags, and actual_content is everything else.
+pub fn parse_thought_tags(content: &str) -> (String, Option<String>) {
+    let mut actual_content = String::new();
+    let mut reasoning_parts: Vec<String> = Vec::new();
+    let mut remaining = content;
+
+    while let Some(start_idx) = remaining.find("<thought>") {
+        // Add content before <thought> to actual_content
+        actual_content.push_str(&remaining[..start_idx]);
+
+        // Find the closing tag
+        let after_start = &remaining[start_idx + 9..]; // 9 = len("<thought>")
+        if let Some(end_idx) = after_start.find("</thought>") {
+            // Extract reasoning content
+            let reasoning_content = &after_start[..end_idx];
+            if !reasoning_content.is_empty() {
+                reasoning_parts.push(reasoning_content.to_string());
+            }
+            // Continue with content after </thought>
+            remaining = &after_start[end_idx + 10..]; // 10 = len("</thought>")
+        } else {
+            // No closing tag found, treat rest as actual content
+            actual_content.push_str(&remaining[start_idx..]);
+            // Clear remaining to prevent duplicate appending
+            remaining = "";
+            break;
+        }
+    }
+
+    // Add any remaining content
+    actual_content.push_str(remaining);
+
+    let reasoning = if reasoning_parts.is_empty() {
+        None
+    } else {
+        Some(reasoning_parts.join("\n\n"))
+    };
+
+    (actual_content.trim().to_string(), reasoning)
+}
+
 /// Extract text content from a ChatMessage.
 fn extract_content(content: &Content) -> Option<String> {
     let text = match content {
@@ -187,5 +231,35 @@ mod tests {
         let func = func_output.unwrap();
         assert_eq!(func.name.as_deref(), Some("get_weather"));
         assert_eq!(func.arguments.as_deref(), Some(r#"{"city":"Beijing"}"#));
+    }
+
+    #[test]
+    fn test_parse_thought_tags() {
+        // No thought tags - should return original content
+        let (content, reasoning) = parse_thought_tags("Hello world");
+        assert_eq!(content, "Hello world");
+        assert!(reasoning.is_none());
+
+        // Single thought tag
+        let (content, reasoning) = parse_thought_tags("<thought>I should search</thought>Hello world");
+        assert_eq!(content, "Hello world");
+        assert_eq!(reasoning, Some("I should search".to_string()));
+
+        // Multiple thought tags - reasoning parts are joined with newlines
+        let (content, reasoning) = parse_thought_tags(
+            "<thought>Step 1: analyze</thought>Result1<thought>Step 2: conclude</thought>Final answer"
+        );
+        assert_eq!(content, "Result1Final answer");
+        assert_eq!(reasoning, Some("Step 1: analyze\n\nStep 2: conclude".to_string()));
+
+        // Unclosed thought tag
+        let (content, reasoning) = parse_thought_tags("<thought>unclosed Hello");
+        assert_eq!(content, "<thought>unclosed Hello");
+        assert!(reasoning.is_none());
+
+        // Content before and after thought
+        let (content, reasoning) = parse_thought_tags("Hello<thought>reasoning</thought>World");
+        assert_eq!(content, "HelloWorld");
+        assert_eq!(reasoning, Some("reasoning".to_string()));
     }
 }

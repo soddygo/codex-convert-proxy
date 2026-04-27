@@ -220,7 +220,7 @@ pub fn chat_chunk_to_response_events(
                     // Accumulate function call arguments
                     if let Some(tc_state) = &mut state.current_tool_call {
                         if let Some(name) = &tc.function.name {
-                            if !tc_state.name.ends_with("()") && !name.is_empty() {
+                            if !tc_state.name.ends_with('(') && !name.is_empty() {
                                 tc_state.name = format!("{}(", name);
                             }
                         }
@@ -267,6 +267,21 @@ pub fn chat_chunk_to_response_events(
 /// Finalize output items when stream ends.
 fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent> {
     let mut events = Vec::new();
+
+    // Finalize any pending tool call
+    if let Some(tc_state) = state.current_tool_call.take() {
+        let output_id = format!("func_{}_{}", state.tool_call_output_index, id);
+        events.push(ResponseStreamEvent::FunctionCallArgumentsDone {
+            output_id: output_id.clone(),
+            name: tc_state.name.clone(),
+            arguments: tc_state.arguments.clone(),
+        });
+        events.push(ResponseStreamEvent::OutputItemDone {
+            id: output_id,
+        });
+        state.completed_tool_calls.push(tc_state);
+        state.tool_call_output_index += 1;
+    }
 
     if state.is_output_item_added {
         events.push(ResponseStreamEvent::OutputTextDone {

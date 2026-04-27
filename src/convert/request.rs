@@ -7,7 +7,7 @@ use crate::types::chat_api::{
     FunctionCall, FunctionChoice, FunctionDefinition, MessageRole, ToolCall,
 };
 use crate::types::response_api::{
-    Content as ResponseContent, ContentPart, InputItem, InputItemOrString, InputItemType,
+    Content as ResponseContent, ContentPart, InputItem, InputItemOrString,
     ResponseRequest, Tool as ResponseTool, ToolChoice as ResponseToolChoice,
     ToolType as ResponseToolType,
 };
@@ -34,6 +34,13 @@ pub fn response_to_chat(
         user: response_req.user,
         stream_options: None,
     };
+
+    // Apply min_tokens floor validation (some providers reject max_tokens < 16)
+    if let Some(max_tokens) = chat_req.max_tokens {
+        if max_tokens < 16 {
+            chat_req.max_tokens = Some(16);
+        }
+    }
 
     provider.transform_request(&mut chat_req);
 

@@ -1,5 +1,5 @@
 //! Proxy module for pingora integration.
 
-pub mod pingora;
+pub mod proxy_impl;
 
-pub use pingora::*;
+pub use proxy_impl::*;

@@ -20,15 +20,11 @@ impl Provider for KimiProvider {
         if model.starts_with("kimi-") {
             model.replace("kimi-", "moonshot-v1-")
         } else if model.starts_with("moonshot-") {
-            // Already normalized or different naming
+            // Already normalized
             model
         } else {
-            // Default: add moonshot-v1- prefix if it's a known Kimi model
-            if model.contains("kimi") {
-                model.replace("kimi", "moonshot-v1")
-            } else {
-                model
-            }
+            // Pass through unknown models unchanged
+            model
         }
     }
 

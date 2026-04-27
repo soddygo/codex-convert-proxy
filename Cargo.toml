@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 # Web framework / proxy
-pingora = { version = "0.8", features = ["lb"] }
+pingora = { version = "0.8", features = ["lb", "rustls"] }
+pingora-core = { version = "0.8", features = ["rustls"] }
+pingora-http = "0.8"
+pingora-proxy = { version = "0.8", features = ["rustls"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -16,17 +19,29 @@ tokio = { version = "1.0", features = ["full"] }
 
 # Error handling
 thiserror = "1.0"
+anyhow = "1.0"
 
 # Utilities
 uuid = { version = "1.0", features = ["v4"] }
 async-trait = "0.1"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 http = "1"
 bytes = "1"
+url = "2.5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging - tracing ecosystem
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# OpenTelemetry integration
+opentelemetry = { version = "0.24", features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.17"
+tracing-opentelemetry = "0.25"
 
 [dev-dependencies]
 tokio-test = "0.4"
-
-[[example]]
-name = "proxy_server"
-path = "examples/proxy_server.rs"

@@ -1,0 +1,43 @@
+{
+  "listen": "0.0.0.0:8080",
+  "log_dir": "./logs",
+  "log_body": false,
+  "backends": [
+    {
+      "name": "glm",
+      "url": "https://api.minimax.chat",
+      "api_key": "YOUR_API_KEY",
+      "protocol": "openai",
+      "match_rules": {
+        "default": true
+      }
+    },
+    {
+      "name": "kimi",
+      "url": "https://api.moonshot.cn/v1",
+      "api_key": "YOUR_API_KEY",
+      "protocol": "openai",
+      "match_rules": {
+        "path_prefix": "/kimi"
+      }
+    },
+    {
+      "name": "deepseek",
+      "url": "https://api.deepseek.com/v1",
+      "api_key": "YOUR_API_KEY",
+      "protocol": "openai",
+      "match_rules": {
+        "path_prefix": "/deepseek"
+      }
+    },
+    {
+      "name": "minimax",
+      "url": "https://api.minimax.chat/v1",
+      "api_key": "YOUR_API_KEY",
+      "protocol": "openai",
+      "match_rules": {
+        "path_prefix": "/minimax"
+      }
+    }
+  ]
+}
