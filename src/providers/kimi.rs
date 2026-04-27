@@ -28,7 +28,7 @@ impl Provider for KimiProvider {
         }
     }
 
-    fn transform_request(&self, request: &mut ChatRequest) {
+    fn transform_request(&mut self, request: &mut ChatRequest) {
         // Kimi is mostly standard, but ensure content format is correct
         for message in &mut request.messages {
             let text = message.content.as_text();
@@ -42,11 +42,11 @@ impl Provider for KimiProvider {
         }
     }
 
-    fn transform_response(&self, _response: &mut ChatResponse) {
+    fn transform_response(&mut self, _response: &mut ChatResponse) {
         // Standard handling
     }
 
-    fn transform_stream_chunk(&self, _chunk: &mut ChatStreamChunk) {
+    fn transform_stream_chunk(&mut self, _chunk: &mut ChatStreamChunk) {
         // Standard handling
     }
 }

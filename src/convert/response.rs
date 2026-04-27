@@ -1,7 +1,7 @@
 //! Response conversion: Chat API → Responses API.
 
 use crate::error::ConversionError;
-use crate::types::chat_api::{ChatMessage, ChatResponse, Content};
+use crate::types::chat_api::{ChatResponse, Content};
 use crate::types::response_api::{
     OutputItemType, ResponseContentPart, ResponseObject, ResponseOutputItem, Usage,
 };
@@ -14,9 +14,6 @@ pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, Conve
         .ok_or_else(|| ConversionError::MissingField("choices".to_string()))?;
 
     let mut outputs = Vec::new();
-
-    // Handle reasoning content (GLM extension)
-    let _reasoning_text = extract_reasoning_content(&choice.message);
 
     // Convert message content
     if let Some(content) = extract_content(&choice.message.content) {
@@ -62,13 +59,6 @@ pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, Conve
         output: outputs,
         usage,
     })
-}
-
-/// Extract reasoning content from message (GLM extension).
-fn extract_reasoning_content(_message: &ChatMessage) -> Option<String> {
-    // GLM uses reasoning_content field which is not part of standard Chat API
-    // We need to check if the message has this via reflection
-    None
 }
 
 /// Parse &lt;thought&gt; tags from content and extract reasoning text.

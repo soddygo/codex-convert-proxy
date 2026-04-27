@@ -6,7 +6,7 @@
 //! - Request lifecycle tracking
 
 use std::path::Path;
-use tracing::{debug, error, info};
+use tracing::info;
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
@@ -18,7 +18,9 @@ use tracing_subscriber::{
 static LOG_CONFIG: std::sync::OnceLock<LogConfig> = std::sync::OnceLock::new();
 
 struct LogConfig {
+    #[allow(dead_code)]
     log_body: bool,
+    #[allow(dead_code)]
     log_headers: bool,
 }
 
@@ -98,139 +100,6 @@ pub fn mask_sensitive(value: &str) -> String {
         return format!("Bearer {}***{}", &token[..6], &token[token.len() - 4..]);
     }
     format!("{}***{}", &value[..6], &value[value.len() - 4..])
-}
-
-/// Request logger for tracking individual request lifecycle.
-pub struct RequestLogger {
-    method: String,
-    uri: String,
-    backend: String,
-    span: tracing::Span,
-}
-
-impl RequestLogger {
-    /// Create a new request logger.
-    pub fn new(method: &str, uri: &str, backend: &str) -> Self {
-        let span = tracing::info_span!(
-            "request",
-            method = %method,
-            uri = %uri,
-            backend = %backend,
-        );
-
-        span.in_scope(|| {
-            info!("[REQUEST] {} {}", method, uri);
-        });
-
-        Self {
-            method: method.to_string(),
-            uri: uri.to_string(),
-            backend: backend.to_string(),
-            span,
-        }
-    }
-
-    /// Log request headers.
-    pub fn log_request_headers(&mut self, headers: &[(String, String)]) {
-        let config = LOG_CONFIG.get().unwrap();
-        if !config.log_headers {
-            return;
-        }
-
-        self.span.in_scope(|| {
-            debug!("Request Headers:");
-            for (name, value) in headers {
-                let display_value = if is_sensitive_header(name) {
-                    mask_sensitive(value)
-                } else {
-                    value.clone()
-                };
-                debug!("  {}: {}", name, display_value);
-            }
-        });
-    }
-
-    /// Log upstream request.
-    pub fn log_upstream_request(&self, method: &str, uri: &str, headers: &[(String, String)]) {
-        self.span.in_scope(|| {
-            info!("[UPSTREAM] {} {}", method, uri);
-
-            let config = LOG_CONFIG.get().unwrap();
-            if config.log_headers {
-                debug!("Upstream Headers:");
-                for (name, value) in headers {
-                    let display_value = if is_sensitive_header(name) {
-                        mask_sensitive(value)
-                    } else {
-                        value.clone()
-                    };
-                    debug!("  {}: {}", name, display_value);
-                }
-            }
-        });
-    }
-
-    /// Log connection info.
-    pub fn log_connection(
-        &self,
-        sni: &str,
-        address: &str,
-        use_tls: bool,
-        reused: bool,
-        tls_version: &str,
-    ) {
-        self.span.in_scope(|| {
-            info!(
-                "[CONNECT] {} -> {} (TLS={}, reused={}, tls_version={})",
-                sni, address, use_tls, reused, tls_version
-            );
-        });
-    }
-
-    /// Log response start.
-    pub fn log_response_start(&self, status: u16, headers: &[(String, String)]) {
-        self.span.in_scope(|| {
-            info!("[RESPONSE] Status: {}", status);
-
-            let config = LOG_CONFIG.get().unwrap();
-            if config.log_headers {
-                debug!("Response Headers:");
-                for (name, value) in headers {
-                    debug!("  {}: {}", name, value);
-                }
-            }
-        });
-    }
-
-    /// Log response chunk.
-    pub fn log_response_chunk(&self, chunk: &[u8]) {
-        let config = LOG_CONFIG.get().unwrap();
-        if !config.log_body {
-            return;
-        }
-
-        if let Ok(text) = std::str::from_utf8(chunk) {
-            for line in text.lines() {
-                if !line.is_empty() {
-                    debug!("  {}", line);
-                }
-            }
-        }
-    }
-
-    /// Log request completion.
-    pub fn log_request_end(&self, duration_ms: u64, status: u16) {
-        self.span.in_scope(|| {
-            info!("[DONE] duration: {}ms, status: {}", duration_ms, status);
-        });
-    }
-
-    /// Log error.
-    pub fn log_error(&self, message: &str) {
-        self.span.in_scope(|| {
-            error!("[ERROR] {}", message);
-        });
-    }
 }
 
 #[cfg(test)]

@@ -22,7 +22,7 @@ impl Provider for GLMProvider {
         model
     }
 
-    fn transform_request(&self, request: &mut ChatRequest) {
+    fn transform_request(&mut self, request: &mut ChatRequest) {
         // GLM doesn't support tools - remove them
         request.tools = None;
         request.tool_choice = None;
@@ -34,7 +34,7 @@ impl Provider for GLMProvider {
         }
     }
 
-    fn transform_response(&self, response: &mut ChatResponse) {
+    fn transform_response(&mut self, response: &mut ChatResponse) {
         // Ensure content is string format
         for choice in &mut response.choices {
             let text = choice.message.content.as_text();
@@ -42,7 +42,7 @@ impl Provider for GLMProvider {
         }
     }
 
-    fn transform_stream_chunk(&self, chunk: &mut ChatStreamChunk) {
+    fn transform_stream_chunk(&mut self, chunk: &mut ChatStreamChunk) {
         // Ensure delta content is string format
         for choice in &mut chunk.choices {
             if let Some(delta) = &mut choice.delta {
@@ -83,7 +83,7 @@ mod tests {
             stream_options: None,
         };
 
-        let provider = GLMProvider;
+        let mut provider = GLMProvider;
         provider.transform_request(&mut request);
 
         assert!(request.tools.is_none());
@@ -115,7 +115,7 @@ mod tests {
             stream_options: None,
         };
 
-        let provider = GLMProvider;
+        let mut provider = GLMProvider;
         provider.transform_request(&mut request);
 
         let msg = request.messages.first().unwrap();

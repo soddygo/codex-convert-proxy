@@ -21,7 +21,7 @@ impl Provider for MiniMaxProvider {
         model
     }
 
-    fn transform_request(&self, request: &mut ChatRequest) {
+    fn transform_request(&mut self, request: &mut ChatRequest) {
         // MiniMax requires content to be a string, not an array
         for message in &mut request.messages {
             if matches!(message.content, Content::Array(_)) {
@@ -31,7 +31,7 @@ impl Provider for MiniMaxProvider {
         }
     }
 
-    fn transform_response(&self, response: &mut ChatResponse) {
+    fn transform_response(&mut self, response: &mut ChatResponse) {
         // Ensure content is string
         for choice in &mut response.choices {
             if matches!(choice.message.content, Content::Array(_)) {
@@ -41,7 +41,7 @@ impl Provider for MiniMaxProvider {
         }
     }
 
-    fn transform_stream_chunk(&self, chunk: &mut ChatStreamChunk) {
+    fn transform_stream_chunk(&mut self, chunk: &mut ChatStreamChunk) {
         // Ensure delta content is string
         for choice in &mut chunk.choices {
             if let Some(delta) = &mut choice.delta {
@@ -88,7 +88,7 @@ mod tests {
             stream_options: None,
         };
 
-        let provider = MiniMaxProvider;
+        let mut provider = MiniMaxProvider;
         provider.transform_request(&mut request);
 
         let msg = request.messages.first().unwrap();

@@ -15,7 +15,7 @@ use crate::types::response_api::{
 /// Convert a Responses API request to a Chat API request.
 pub fn response_to_chat(
     response_req: ResponseRequest,
-    provider: &dyn Provider,
+    provider: &mut dyn Provider,
 ) -> Result<ChatRequest, ConversionError> {
     let messages = convert_input_to_messages(response_req.input, response_req.instructions)?;
     let tools = convert_tools(response_req.tools);
@@ -297,8 +297,8 @@ mod tests {
             user: None,
         };
 
-        let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider).unwrap();
+        let mut provider = GLMProvider;
+        let chat_req = response_to_chat(request, &mut provider).unwrap();
 
         // First message should be system
         let first = chat_req.messages.first().unwrap();
@@ -335,8 +335,8 @@ mod tests {
             user: None,
         };
 
-        let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider).unwrap();
+        let mut provider = GLMProvider;
+        let chat_req = response_to_chat(request, &mut provider).unwrap();
 
         // Should have an assistant message with tool_calls
         let msg = chat_req.messages.first().unwrap();
@@ -384,8 +384,8 @@ mod tests {
             user: None,
         };
 
-        let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider).unwrap();
+        let mut provider = GLMProvider;
+        let chat_req = response_to_chat(request, &mut provider).unwrap();
 
         // Should have assistant message with tool_calls and tool message
         assert_eq!(chat_req.messages.len(), 2);

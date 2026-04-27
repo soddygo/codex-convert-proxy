@@ -21,19 +21,19 @@ pub trait Provider: Send + Sync {
     /// This is called after the standard conversion but before sending
     /// to the upstream provider. Providers can modify the request to
     /// handle API differences.
-    fn transform_request(&self, _request: &mut ChatRequest) {}
+    fn transform_request(&mut self, _request: &mut ChatRequest) {}
 
     /// Transform response after receiving from provider.
     ///
     /// This is called after receiving the response but before converting
     /// to Responses API format. Providers can normalize response format.
-    fn transform_response(&self, _response: &mut ChatResponse) {}
+    fn transform_response(&mut self, _response: &mut ChatResponse) {}
 
     /// Transform streaming chunk in real-time.
     ///
     /// This is called for each SSE chunk received from the provider.
     /// Providers can modify chunk content before event conversion.
-    fn transform_stream_chunk(&self, _chunk: &mut ChatStreamChunk) {}
+    fn transform_stream_chunk(&mut self, _chunk: &mut ChatStreamChunk) {}
 }
 
 /// Create a provider by name.

@@ -20,16 +20,16 @@ impl Provider for DeepSeekProvider {
         model
     }
 
-    fn transform_request(&self, _request: &mut ChatRequest) {
+    fn transform_request(&mut self, _request: &mut ChatRequest) {
         // DeepSeek has excellent Chat API compatibility
         // No modifications needed
     }
 
-    fn transform_response(&self, _response: &mut ChatResponse) {
+    fn transform_response(&mut self, _response: &mut ChatResponse) {
         // No modifications needed
     }
 
-    fn transform_stream_chunk(&self, _chunk: &mut ChatStreamChunk) {
+    fn transform_stream_chunk(&mut self, _chunk: &mut ChatStreamChunk) {
         // No modifications needed
     }
 }
