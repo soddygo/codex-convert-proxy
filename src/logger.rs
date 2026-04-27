@@ -106,8 +106,6 @@ pub struct RequestLogger {
     uri: String,
     backend: String,
     span: tracing::Span,
-    request_body: Vec<u8>,
-    model: Option<String>,
 }
 
 impl RequestLogger {
@@ -129,8 +127,6 @@ impl RequestLogger {
             uri: uri.to_string(),
             backend: backend.to_string(),
             span,
-            request_body: Vec::new(),
-            model: None,
         }
     }
 
@@ -150,31 +146,6 @@ impl RequestLogger {
                     value.clone()
                 };
                 debug!("  {}: {}", name, display_value);
-            }
-        });
-    }
-
-    /// Collect request body.
-    pub fn collect_body(&mut self, body: &[u8]) {
-        self.request_body.extend_from_slice(body);
-    }
-
-    /// Log request body.
-    pub fn log_request_body(&self) {
-        let config = LOG_CONFIG.get().unwrap();
-        if !config.log_body || self.request_body.is_empty() {
-            return;
-        }
-
-        self.span.in_scope(|| {
-            if let Ok(text) = std::str::from_utf8(&self.request_body) {
-                // Compact JSON output
-                let body_text = if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                    serde_json::to_string(&json).unwrap_or_else(|_| text.to_string())
-                } else {
-                    text.to_string()
-                };
-                info!("[REQUEST BODY] {}", body_text);
             }
         });
     }
@@ -259,11 +230,6 @@ impl RequestLogger {
         self.span.in_scope(|| {
             error!("[ERROR] {}", message);
         });
-    }
-
-    /// Get the model name if parsed.
-    pub fn model(&self) -> Option<&str> {
-        self.model.as_deref()
     }
 }
 

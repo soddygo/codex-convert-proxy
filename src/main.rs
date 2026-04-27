@@ -54,7 +54,7 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
     eprintln!();
 
     // Create CodexProxy (convert Box<dyn Provider> to Arc<dyn Provider>)
-    let proxy = CodexProxy::new(
+    let _proxy = CodexProxy::new(
         Arc::from(provider),
         &backend.url,
         &backend.api_key,

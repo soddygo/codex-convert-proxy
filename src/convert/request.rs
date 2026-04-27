@@ -7,7 +7,7 @@ use crate::types::chat_api::{
     FunctionCall, FunctionChoice, FunctionDefinition, MessageRole, ToolCall,
 };
 use crate::types::response_api::{
-    Content as ResponseContent, ContentPart, InputItem, InputItemOrString,
+    Content as ResponseContent, ContentPart, InputItemOrString,
     ResponseRequest, Tool as ResponseTool, ToolChoice as ResponseToolChoice,
     ToolType as ResponseToolType,
 };
@@ -280,7 +280,7 @@ impl ChatToolChoice {
 mod tests {
     use super::*;
     use crate::providers::glm::GLMProvider;
-    use crate::types::response_api::InputItemType;
+    use crate::types::response_api::{InputItem, InputItemType};
 
     #[test]
     fn test_instructions_to_system_message() {

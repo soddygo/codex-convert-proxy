@@ -16,11 +16,8 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 use tracing::{debug, error, info};
 
-use crate::convert::{response_to_chat, StreamState};
-use crate::error::ConversionError;
+use crate::convert::StreamState;
 use crate::providers::Provider;
-use crate::types::chat_api::ChatRequest;
-use crate::types::response_api::ResponseRequest;
 
 /// Proxy context attached to each request session.
 #[derive(Debug)]
@@ -66,8 +63,6 @@ impl ProxyContext {
 pub struct CodexProxy {
     /// Provider for request/response transformation.
     pub provider: Arc<dyn Provider>,
-    /// Upstream URL for the LLM API.
-    pub upstream_url: String,
     /// Upstream host.
     pub upstream_host: String,
     /// Upstream port.
@@ -95,16 +90,9 @@ impl CodexProxy {
         let host = uri.host().unwrap_or("localhost").to_string();
         let port = uri.port_u16().unwrap_or(443);
         let use_tls = scheme == "https";
-        let upstream_url = format!(
-            "{}://{}:{}",
-            if use_tls { "https" } else { "http" },
-            host,
-            port
-        );
 
         Self {
             provider,
-            upstream_url,
             upstream_host: host,
             upstream_port: port,
             use_tls,
@@ -113,59 +101,10 @@ impl CodexProxy {
         }
     }
 
-    /// Convert a Responses API request to Chat API request.
-    fn convert_request(&self, body: &[u8]) -> Result<ChatRequest, ConversionError> {
-        let response_req: ResponseRequest = serde_json::from_slice(body)?;
-        let _model = response_req.model.clone();
-        let chat_req = response_to_chat(response_req, self.provider.as_ref())?;
-        Ok(chat_req)
-    }
-
     /// Get the provider name.
     pub fn provider_name(&self) -> &'static str {
         self.provider.name()
     }
-}
-
-/// Collect request headers as a vector of (name, value) tuples.
-fn collect_request_headers(session: &Session) -> Vec<(String, String)> {
-    session
-        .req_header()
-        .headers
-        .iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_string(),
-                value.to_str().unwrap_or("<binary>").to_string(),
-            )
-        })
-        .collect()
-}
-
-/// Check if header name is sensitive (should be masked in logs).
-fn is_sensitive_header(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == "x-api-key"
-        || lower == "authorization"
-        || lower == "api-key"
-        || lower == "x-api-token"
-        || lower == "cookie"
-        || lower == "set-cookie"
-}
-
-/// Mask sensitive header values.
-fn mask_sensitive(value: &str) -> String {
-    if value.len() <= 10 {
-        return "***".to_string();
-    }
-    if value.starts_with("Bearer ") {
-        let token = &value[7..];
-        if token.len() <= 10 {
-            return "Bearer ***".to_string();
-        }
-        return format!("Bearer {}***{}", &token[..6], &token[token.len() - 4..]);
-    }
-    format!("{}***{}", &value[..6], &value[value.len() - 4..])
 }
 
 #[async_trait]
@@ -499,34 +438,6 @@ impl ProxyHttp for CodexProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_sensitive_header_detection() {
-        assert!(is_sensitive_header("x-api-key"));
-        assert!(is_sensitive_header("X-API-KEY"));
-        assert!(is_sensitive_header("authorization"));
-        assert!(is_sensitive_header("Authorization"));
-        assert!(is_sensitive_header("cookie"));
-        assert!(!is_sensitive_header("content-type"));
-        assert!(!is_sensitive_header("x-request-id"));
-    }
-
-    #[test]
-    fn test_mask_sensitive() {
-        assert_eq!(mask_sensitive("short"), "***");
-        // Bearer token with short token (<=10 chars): returns "Bearer ***"
-        assert_eq!(mask_sensitive("Bearer sk-xxx"), "Bearer ***");
-        // Bearer token with long token: shows first 6 and last 4 chars
-        assert_eq!(
-            mask_sensitive("Bearer sk-project-12345"),
-            "Bearer sk-pro***2345"
-        );
-        // Long non-Bearer: shows first 6 and last 4 chars
-        assert_eq!(
-            mask_sensitive("sk-ant-api03-xxxxxxxxxxxx"),
-            "sk-ant***xxxx"
-        );
-    }
 
     #[test]
     fn test_proxy_creation() {
