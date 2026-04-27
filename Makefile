@@ -15,7 +15,7 @@ help:
 	@echo ""
 
 run:
-	$(CARGO) run -- start --config $(CONFIG)
+	$(CARGO) run -- start --config config.json
 
 init:
 	$(CARGO) run -- init config.example.json
