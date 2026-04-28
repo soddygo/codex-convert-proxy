@@ -493,6 +493,10 @@ impl ProxyHttp for CodexProxy {
 
             // For streaming conversion responses, convert each SSE chunk
             if ctx.is_streaming && ctx.is_conversion_request {
+                // Suppress raw Chat API body immediately - it will be replaced
+                // with converted Responses API events below (or empty if no events)
+                *body = Some(Bytes::new());
+
                 let text = std::str::from_utf8(b).unwrap_or("");
                 debug!("[STREAM_RAW] is_streaming=true, body={}", String::from_utf8_lossy(b).chars().take(200).collect::<String>());
                 let mut converted_chunks: Vec<String> = Vec::new();
@@ -643,6 +647,8 @@ impl ProxyHttp for CodexProxy {
                 if !converted_chunks.is_empty() {
                     *body = Some(Bytes::from(converted_chunks.join("")));
                 }
+                // If converted_chunks is empty, *body remains as Bytes::new()
+                // (set at the top of this block), suppressing the raw Chat API body.
             }
         }
 
