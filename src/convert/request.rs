@@ -189,17 +189,17 @@ fn extract_content(content: &Option<ResponseContent>) -> Result<Content, Convers
 fn convert_tools(tools: Vec<ResponseTool>) -> Vec<ChatTool> {
     tools
         .into_iter()
-        .map(|t| match t.tool_type {
-            ResponseToolType::Function => ChatTool {
+        .filter_map(|t| match t.tool_type {
+            ResponseToolType::Function => Some(ChatTool {
                 tool_type: "function".to_string(),
                 function: FunctionDefinition {
                     name: t.name.unwrap_or_default(),
                     description: t.description,
                     parameters: t.parameters,
                 },
-            },
+            }),
             // Convert built-in tools to function tools with default parameters
-            ResponseToolType::WebSearch => ChatTool {
+            ResponseToolType::WebSearch => Some(ChatTool {
                 tool_type: "function".to_string(),
                 function: FunctionDefinition {
                     name: t.name.unwrap_or_else(|| "web_search".to_string()),
@@ -215,8 +215,8 @@ fn convert_tools(tools: Vec<ResponseTool>) -> Vec<ChatTool> {
                         "required": ["query"]
                     })),
                 },
-            },
-            ResponseToolType::CodeInterpreter => ChatTool {
+            }),
+            ResponseToolType::CodeInterpreter => Some(ChatTool {
                 tool_type: "function".to_string(),
                 function: FunctionDefinition {
                     name: t.name.unwrap_or_else(|| "code_interpreter".to_string()),
@@ -234,8 +234,8 @@ fn convert_tools(tools: Vec<ResponseTool>) -> Vec<ChatTool> {
                         "required": ["code"]
                     })),
                 },
-            },
-            ResponseToolType::FileSearch => ChatTool {
+            }),
+            ResponseToolType::FileSearch => Some(ChatTool {
                 tool_type: "function".to_string(),
                 function: FunctionDefinition {
                     name: t.name.unwrap_or_else(|| "file_search".to_string()),
@@ -251,7 +251,9 @@ fn convert_tools(tools: Vec<ResponseTool>) -> Vec<ChatTool> {
                         "required": ["query"]
                     })),
                 },
-            },
+            }),
+            // Namespace tools are not convertible to Chat API format - skip them
+            ResponseToolType::Namespace => None,
         })
         .collect()
 }

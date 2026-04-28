@@ -1,13 +1,14 @@
 //! MiniMax provider implementation.
 
 use crate::providers::trait_::Provider;
-use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk, Content};
+use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk, Content, MessageRole};
 
 /// MiniMax provider.
 ///
 /// MiniMax specific handling:
 /// - Content must be string, not array
 /// - Model name may need normalization
+/// - Does not support 'developer' role, convert to 'user'
 pub struct MiniMaxProvider;
 
 impl Provider for MiniMaxProvider {
@@ -27,6 +28,10 @@ impl Provider for MiniMaxProvider {
             if matches!(message.content, Content::Array(_)) {
                 let text = message.content.as_text();
                 message.content = Content::String(text);
+            }
+            // MiniMax doesn't support developer role - convert to user
+            if message.role == MessageRole::Developer {
+                message.role = MessageRole::User;
             }
         }
     }
@@ -55,6 +60,10 @@ impl Provider for MiniMaxProvider {
                 }
             }
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
+        Box::new(MiniMaxProvider)
     }
 }
 

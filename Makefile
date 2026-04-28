@@ -14,8 +14,12 @@ help:
 	@echo "  make clean                  Clean build artifacts"
 	@echo ""
 
-run:
+run: clean-logs
 	$(CARGO) run -- start --config config.json
+
+clean-logs:
+	@rm -f logs/proxy.log.* 2>/dev/null || true
+	@echo "Cleaned old logs"
 
 init:
 	$(CARGO) run -- init config.example.json

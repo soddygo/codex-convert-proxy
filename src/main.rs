@@ -2,12 +2,15 @@
 //!
 //! A proxy server that converts between OpenAI Responses API and Chat API.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_convert_proxy::cli::{Cli, Commands, StartArgs};
 use codex_convert_proxy::config::{BackendRouter, ProxyConfig};
 use codex_convert_proxy::logger;
 use codex_convert_proxy::proxy::CodexProxy;
+use codex_convert_proxy::providers::create_provider;
+use codex_convert_proxy::providers::Provider;
 use codex_convert_proxy::server;
 
 fn main() {
@@ -46,16 +49,33 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
     let router = Arc::new(BackendRouter::new(config.backends.clone())?);
     let listen = &config.listen;
 
+    // Create providers for each backend
+    let mut providers: HashMap<String, Box<dyn Provider + Send + Sync>> = HashMap::new();
+    for backend in &config.backends {
+        let name = backend.name.clone();
+        if !providers.contains_key(&name) {
+            match create_provider(&name) {
+                Ok(p) => {
+                    providers.insert(name, p);
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to create provider for {}: {}", name, e);
+                }
+            }
+        }
+    }
+
     eprintln!("Starting Codex Convert Proxy");
     eprintln!("  Listen: {}", listen);
     eprintln!("  Backends:");
     for name in router.backend_names() {
-        eprintln!("    - {}", name);
+        let has_provider = providers.contains_key(name);
+        eprintln!("    - {} {}", name, if has_provider { "(provider OK)" } else { "(NO PROVIDER)" });
     }
     eprintln!();
 
     // Create CodexProxy
-    let proxy = CodexProxy::new(router, config.log_body);
+    let proxy = CodexProxy::new(router, providers, config.log_body);
 
     // Start the pingora server (this blocks)
     server::start_proxy_server(proxy, listen);

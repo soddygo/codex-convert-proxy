@@ -34,6 +34,9 @@ pub trait Provider: Send + Sync {
     /// This is called for each SSE chunk received from the provider.
     /// Providers can modify chunk content before event conversion.
     fn transform_stream_chunk(&mut self, _chunk: &mut ChatStreamChunk) {}
+
+    /// Clone the provider as a boxed trait object.
+    fn clone_box(&self) -> Box<dyn Provider + Send + Sync>;
 }
 
 /// Create a provider by name.

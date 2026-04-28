@@ -49,6 +49,10 @@ impl Provider for KimiProvider {
     fn transform_stream_chunk(&mut self, _chunk: &mut ChatStreamChunk) {
         // Standard handling
     }
+
+    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
+        Box::new(KimiProvider)
+    }
 }
 
 #[cfg(test)]

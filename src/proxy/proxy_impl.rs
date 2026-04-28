@@ -3,6 +3,7 @@
 //! This module provides full ProxyHttp trait implementation for HTTP proxying
 //! with request/response format conversion between Responses API and Chat API.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::BackendRouter;
 use crate::config::BackendInfo;
-use crate::convert::StreamState;
+use crate::convert::{StreamState, response_to_chat};
+use crate::providers::Provider;
+use crate::types::response_api::ResponseRequest;
 
 /// Proxy context attached to each request session.
 #[derive(Debug)]
@@ -41,6 +44,10 @@ pub struct ProxyContext {
     pub is_streaming: bool,
     /// Rewritten upstream path.
     pub rewritten_path: Option<String>,
+    /// Whether this is a streaming response (for conversion tracking).
+    pub is_stream_response: bool,
+    /// Collected Chat API response for conversion at end of stream.
+    pub chat_response_body: Vec<u8>,
 }
 
 impl ProxyContext {
@@ -56,6 +63,8 @@ impl ProxyContext {
             response_body: Vec::new(),
             is_streaming: false,
             rewritten_path: None,
+            is_stream_response: false,
+            chat_response_body: Vec::new(),
         }
     }
 }
@@ -64,6 +73,8 @@ impl ProxyContext {
 pub struct CodexProxy {
     /// Backend router for multi-backend routing.
     pub router: Arc<BackendRouter>,
+    /// Providers for each backend.
+    pub providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
     /// Whether to log request/response bodies.
     pub log_body: bool,
 }
@@ -72,12 +83,19 @@ impl CodexProxy {
     /// Create a new CodexProxy instance.
     pub fn new(
         router: Arc<BackendRouter>,
+        providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
         log_body: bool,
     ) -> Self {
         Self {
             router,
+            providers,
             log_body,
         }
+    }
+
+    /// Get cloned provider for a backend.
+    fn get_provider(&self, name: &str) -> Option<Box<dyn Provider + Send + Sync>> {
+        self.providers.get(name).map(|p| p.clone_box())
     }
 }
 
@@ -185,8 +203,14 @@ impl ProxyHttp for CodexProxy {
         let path = original_uri.path().to_string();
         let query = original_uri.query();
 
-        // Build new path - remove any path prefix for routing
+        // Check if this is a conversion request (Responses API → Chat API)
+        let is_conversion_request = path.starts_with("/v1/responses") || path.starts_with("/responses");
+
+        // Build new path - Responses API → Chat API conversion
+        // Handle both /v1/responses and /responses paths
         let new_path = if path.starts_with("/v1/responses") {
+            "/v1/chat/completions".to_string()
+        } else if path.starts_with("/responses") {
             "/v1/chat/completions".to_string()
         } else {
             path.clone()
@@ -209,6 +233,13 @@ impl ProxyHttp for CodexProxy {
         // Remove client authentication headers
         upstream_request.remove_header("x-api-key");
         upstream_request.remove_header("authorization");
+
+        // For conversion requests, remove content-length header since body size will change
+        // The upstream will use HTTP/2 DATA frame lengths instead of content-length validation
+        if is_conversion_request {
+            upstream_request.remove_header("content-length");
+            debug!("[UPSTREAM] Removed content-length for body transformation");
+        }
 
         // Inject API key for this backend
         upstream_request
@@ -247,20 +278,64 @@ impl ProxyHttp for CodexProxy {
     where
         Self::CTX: Send + Sync,
     {
-        // Collect body
+        // Collect body bytes
         if let Some(b) = body {
             ctx.request_body.extend_from_slice(b);
         }
 
+        // Only process when we have the complete body
         if end_of_stream && !ctx.request_body.is_empty() {
-            // Log request body if enabled
-            if self.log_body {
-                if let Ok(text) = std::str::from_utf8(&ctx.request_body) {
-                    debug!("[REQUEST BODY] {}", text);
+            let backend_name = ctx.selected_backend.as_ref().map(|b| b.name.clone());
+
+            // Parse and convert request
+            if let (Some(b_name), Some(_backend)) = (backend_name.as_ref(), ctx.selected_backend.as_ref()) {
+                if let Some(mut provider) = self.get_provider(b_name) {
+                    // Parse as ResponseRequest
+                    match serde_json::from_slice::<ResponseRequest>(&ctx.request_body) {
+                        Ok(response_req) => {
+                            // Convert using provider
+                            match response_to_chat(response_req, provider.as_mut()) {
+                                Ok(chat_req) => {
+                                    // Serialize ChatRequest as JSON
+                                    match serde_json::to_vec(&chat_req) {
+                                        Ok(converted) => {
+                                            // Log conversion if enabled
+                                            if self.log_body {
+                                                debug!("[CONVERTED REQUEST] {}", String::from_utf8_lossy(&converted));
+                                            }
+                                            // Save converted request for debugging to logs directory
+                                            let log_dir = std::path::Path::new("logs");
+                                            let path = log_dir.join("converted_request.json");
+                                            if std::fs::write(&path, &converted).is_ok() {
+                                                debug!("[CONVERTED REQUEST SAVED] to {}", path.display());
+                                            }
+                                            // Replace body with converted request
+                                            *body = Some(Bytes::from(converted));
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to serialize ChatRequest: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to convert request: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // If parsing fails, keep original body
+                            debug!("Failed to parse as ResponseRequest, keeping original: {}", e);
+                            // Save full request body to file for debugging
+                            let path = "logs/codex_request_body.json";
+                            if let Ok(_) = std::fs::write(path, &ctx.request_body) {
+                                debug!("[REQUEST BODY SAVED] to {}", path);
+                            }
+                        }
+                    }
                 }
             }
 
-            // Parse model name
+            // Parse model name from original request for logging
             if ctx.model.is_none() {
                 if let Ok(text) = std::str::from_utf8(&ctx.request_body) {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
@@ -271,6 +346,7 @@ impl ProxyHttp for CodexProxy {
                         if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
                             ctx.is_streaming = stream;
                             if stream {
+                                ctx.is_stream_response = true;
                                 ctx.stream_state = Some(StreamState::new(
                                     json.get("id")
                                         .and_then(|v| v.as_str())
@@ -312,23 +388,91 @@ impl ProxyHttp for CodexProxy {
     where
         Self::CTX: Send + Sync,
     {
-        if let Some(b) = body {
-            if self.log_body {
-                if let Ok(text) = std::str::from_utf8(b) {
-                    debug!("[RESPONSE CHUNK] {}", text);
-                }
-            }
+        // Clone the body bytes for processing
+        let body_clone = body.clone();
 
+        if let Some(b) = body_clone.as_ref() {
             ctx.response_body.extend_from_slice(b);
 
-            // Transform streaming chunks if enabled
-            // Note: Streaming body transformation requires more complex handling
-            // (intercepting and modifying the response body). For now we collect
-            // the chunks and log them if enabled.
+            // For streaming responses, convert each SSE chunk
+            if ctx.is_streaming {
+                let text = std::str::from_utf8(b).unwrap_or("");
+                let mut converted_chunks: Vec<String> = Vec::new();
+
+                for line in text.lines() {
+                    if line.starts_with("data: ") {
+                        let data = &line[6..];
+                        if data == "[DONE]" {
+                            // Stream ended marker - emit done event
+                            converted_chunks.push("data: [DONE]\n\n".to_string());
+                            continue;
+                        }
+
+                        // Parse as ChatStreamChunk
+                        if let Ok(chunk) = serde_json::from_str::<crate::types::chat_api::ChatStreamChunk>(data) {
+                            let mut chunk = chunk;
+
+                            // Apply provider transformation if available
+                            if let Some(b_name) = ctx.provider_name.as_ref() {
+                                if let Some(mut provider) = self.get_provider(b_name) {
+                                    provider.transform_stream_chunk(&mut chunk);
+                                }
+                            }
+
+                            // Convert to Response API events
+                            if let Some(ref mut state) = ctx.stream_state {
+                                match crate::convert::chat_chunk_to_response_events(&chunk, state) {
+                                    Ok(events) => {
+                                        let sse_data: String = events
+                                            .iter()
+                                            .map(crate::convert::event_to_sse)
+                                            .collect();
+                                        if !sse_data.is_empty() {
+                                            if self.log_body {
+                                                debug!("[STREAM CHUNK] {}", sse_data);
+                                            }
+                                            converted_chunks.push(sse_data);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to convert stream chunk: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !converted_chunks.is_empty() {
+                    *body = Some(Bytes::from(converted_chunks.join("")));
+                }
+            }
         }
 
         if end_of_body {
             let duration_ms = ctx.start_time.elapsed().as_millis() as u64;
+
+            // For non-streaming responses, convert the full body
+            if !ctx.is_streaming && !ctx.response_body.is_empty() {
+                if let Ok(text) = std::str::from_utf8(&ctx.response_body) {
+                    if let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
+                        match crate::convert::chat_to_response(chat_resp) {
+                            Ok(response_obj) => {
+                                if let Ok(converted) = serde_json::to_vec(&response_obj) {
+                                    if self.log_body {
+                                        debug!("[CONVERTED RESPONSE] {}", String::from_utf8_lossy(&converted));
+                                    }
+                                    *body = Some(Bytes::from(converted));
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to convert response: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+
             info!(
                 "[DONE] provider={}, model={:?}, duration={}ms",
                 ctx.provider_name.as_deref().unwrap_or("unknown"),
@@ -448,6 +592,8 @@ impl ProxyHttp for CodexProxy {
 mod tests {
     use super::*;
     use crate::config::{BackendConfig, MatchRules};
+    use crate::providers::GLMProvider;
+    use crate::providers::Provider;
 
     #[test]
     fn test_proxy_creation() {
@@ -462,7 +608,9 @@ mod tests {
             },
         }];
         let router = Arc::new(BackendRouter::new(configs).unwrap());
-        let proxy = CodexProxy::new(router, true);
+        let mut providers = HashMap::new();
+        providers.insert("glm".to_string(), Box::new(GLMProvider) as Box<dyn Provider + Send + Sync>);
+        let proxy = CodexProxy::new(router, providers, true);
         assert!(proxy.log_body);
     }
 }

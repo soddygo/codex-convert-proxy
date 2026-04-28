@@ -75,10 +75,13 @@ pub enum Content {
 
 /// A content part.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum ContentPart {
+    #[serde(rename = "input_text")]
     InputText { text: String },
+    #[serde(rename = "input_image")]
     InputImage { image_url: String },
+    #[serde(rename = "output_text")]
     OutputText { text: String },
 }
 
@@ -110,17 +113,59 @@ pub enum ToolType {
     WebSearch,
     CodeInterpreter,
     FileSearch,
+    Namespace,
 }
 
 /// Tool choice policy.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case", tag = "type")]
+#[derive(Debug, Clone, Default)]
 pub enum ToolChoice {
     #[default]
     Auto,
     None,
     Required,
     Function(FunctionToolChoice),
+}
+
+impl<'de> Deserialize<'de> for ToolChoice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum ToolChoiceHelper {
+            String(String),
+            Object(FunctionToolChoice),
+        }
+
+        let helper = ToolChoiceHelper::deserialize(deserializer)?;
+        match helper {
+            ToolChoiceHelper::String(s) => match s.as_str() {
+                "auto" => Ok(ToolChoice::Auto),
+                "none" => Ok(ToolChoice::None),
+                "required" => Ok(ToolChoice::Required),
+                _ => Ok(ToolChoice::Auto),
+            },
+            ToolChoiceHelper::Object(f) => Ok(ToolChoice::Function(f)),
+        }
+    }
+}
+
+impl Serialize for ToolChoice {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            ToolChoice::Auto => serializer.serialize_str("auto"),
+            ToolChoice::None => serializer.serialize_str("none"),
+            ToolChoice::Required => serializer.serialize_str("required"),
+            ToolChoice::Function(f) => {
+                let helper = FunctionToolChoice { name: f.name.clone() };
+                helper.serialize(serializer)
+            }
+        }
+    }
 }
 
 /// Function tool choice.

@@ -32,4 +32,8 @@ impl Provider for DeepSeekProvider {
     fn transform_stream_chunk(&mut self, _chunk: &mut ChatStreamChunk) {
         // No modifications needed
     }
+
+    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
+        Box::new(DeepSeekProvider)
+    }
 }

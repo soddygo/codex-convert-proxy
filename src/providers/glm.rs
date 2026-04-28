@@ -55,6 +55,10 @@ impl Provider for GLMProvider {
             }
         }
     }
+
+    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
+        Box::new(GLMProvider)
+    }
 }
 
 #[cfg(test)]
