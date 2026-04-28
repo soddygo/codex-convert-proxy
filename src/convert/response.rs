@@ -15,17 +15,39 @@ pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, Conve
 
     let mut outputs = Vec::new();
 
-    // Convert message content
+    // Convert message content (strip thinking tags)
     if let Some(content) = extract_content(&choice.message.content) {
-        outputs.push(ResponseOutputItem {
-            id: format!("msg_{}", chat_resp.id),
-            item_type: OutputItemType::Message,
-            status: Some("completed".to_string()),
-            content: Some(vec![ResponseContentPart::OutputText { text: content }]),
-            name: None,
-            arguments: None,
-            call_id: None,
-        });
+        let (actual_content, reasoning) = parse_thought_tags(&content);
+
+        // Add reasoning output if present
+        if let Some(ref reasoning_text) = reasoning {
+            if !reasoning_text.is_empty() {
+                outputs.push(ResponseOutputItem {
+                    id: format!("reasoning_{}", chat_resp.id),
+                    item_type: OutputItemType::Reasoning,
+                    status: Some("completed".to_string()),
+                    content: Some(vec![ResponseContentPart::OutputText {
+                        text: reasoning_text.clone(),
+                    }]),
+                    name: None,
+                    arguments: None,
+                    call_id: None,
+                });
+            }
+        }
+
+        // Add text output if present (after stripping thinking tags)
+        if !actual_content.is_empty() {
+            outputs.push(ResponseOutputItem {
+                id: format!("msg_{}", chat_resp.id),
+                item_type: OutputItemType::Message,
+                status: Some("completed".to_string()),
+                content: Some(vec![ResponseContentPart::OutputText { text: actual_content }]),
+                name: None,
+                arguments: None,
+                call_id: None,
+            });
+        }
     }
 
     // Convert tool calls
@@ -62,33 +84,53 @@ pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, Conve
     })
 }
 
-/// Parse &lt;thought&gt; tags from content and extract reasoning text.
+/// Parse thinking tags from content and extract reasoning text.
+///
+/// Supports both `<thought>...</thought>` and `<think>...</think>` tags
+/// (MiniMax uses `<think>`, OpenAI-compatible models use `<thought>`).
 ///
 /// Returns (actual_content, reasoning_text) where reasoning_text is the content
-/// inside &lt;thought&gt;...&lt;/thought&gt; tags, and actual_content is everything else.
+/// inside thinking tags, and actual_content is everything else.
 pub fn parse_thought_tags(content: &str) -> (String, Option<String>) {
     let mut actual_content = String::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut remaining = content;
 
-    while let Some(start_idx) = remaining.find("<thought>") {
-        // Add content before <thought> to actual_content
+    // Try both tag formats
+    loop {
+        // Find the next opening tag (either <thought> or <think>)
+        let thought_start = remaining.find("<thought>");
+        let think_start = remaining.find("<think>");
+
+        let (start_idx, open_tag, close_tag) = match (thought_start, think_start) {
+            (Some(t), Some(k)) => {
+                if t <= k {
+                    (t, "<thought>", "</thought>")
+                } else {
+                    (k, "<think>", "</think>")
+                }
+            }
+            (Some(t), None) => (t, "<thought>", "</thought>"),
+            (None, Some(k)) => (k, "<think>", "</think>"),
+            (None, None) => break,
+        };
+
+        // Add content before the tag to actual_content
         actual_content.push_str(&remaining[..start_idx]);
 
         // Find the closing tag
-        let after_start = &remaining[start_idx + 9..]; // 9 = len("<thought>")
-        if let Some(end_idx) = after_start.find("</thought>") {
+        let after_start = &remaining[start_idx + open_tag.len()..];
+        if let Some(end_idx) = after_start.find(close_tag) {
             // Extract reasoning content
             let reasoning_content = &after_start[..end_idx];
             if !reasoning_content.is_empty() {
                 reasoning_parts.push(reasoning_content.to_string());
             }
-            // Continue with content after </thought>
-            remaining = &after_start[end_idx + 10..]; // 10 = len("</thought>")
+            // Continue with content after closing tag
+            remaining = &after_start[end_idx + close_tag.len()..];
         } else {
             // No closing tag found, treat rest as actual content
             actual_content.push_str(&remaining[start_idx..]);
-            // Clear remaining to prevent duplicate appending
             remaining = "";
             break;
         }
@@ -252,5 +294,30 @@ mod tests {
         let (content, reasoning) = parse_thought_tags("Hello<thought>reasoning</thought>World");
         assert_eq!(content, "HelloWorld");
         assert_eq!(reasoning, Some("reasoning".to_string()));
+    }
+
+    #[test]
+    fn test_parse_think_tags() {
+        // MiniMax uses <think> tags instead of <thought>
+        let (content, reasoning) = parse_thought_tags("<think>\n分析当前目录\n</think>\n\n让我看看项目");
+        assert_eq!(content, "让我看看项目");
+        assert_eq!(reasoning, Some("\n分析当前目录\n".to_string()));
+
+        // Multiple think tags
+        let (content, reasoning) = parse_thought_tags(
+            "<think>Step 1</think>Result1<think>Step 2</think>Final"
+        );
+        assert_eq!(content, "Result1Final");
+        assert_eq!(reasoning, Some("Step 1\n\nStep 2".to_string()));
+
+        // Mixed tags (shouldn't happen but test robustness)
+        let (content, reasoning) = parse_thought_tags("<thought>A</thought>B<think>C</think>D");
+        assert_eq!(content, "BD");
+        assert_eq!(reasoning, Some("A\n\nC".to_string()));
+
+        // Empty think tag
+        let (content, reasoning) = parse_thought_tags("<think>Hello");
+        assert_eq!(content, "<think>Hello");
+        assert!(reasoning.is_none());
     }
 }

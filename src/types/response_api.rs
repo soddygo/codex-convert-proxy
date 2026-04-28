@@ -199,7 +199,7 @@ pub enum OutputItemType {
 
 /// Content part in response output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseContentPart {
     OutputText { text: String },
     Refusal { text: String },

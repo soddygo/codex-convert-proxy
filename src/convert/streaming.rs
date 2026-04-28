@@ -98,7 +98,6 @@ pub enum ResponseStreamEvent {
 pub struct StreamState {
     pub response_id: String,
     pub output_id: String,
-    pub output_index: u32,
     pub content_index: u32,
     pub full_text: String,
     pub reasoning_text: String,
@@ -114,6 +113,16 @@ pub struct StreamState {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
+    /// Buffer for incomplete think/thought tags during streaming
+    pub thinking_buffer: String,
+    /// Whether we're currently inside a thinking tag
+    pub is_thinking: bool,
+    /// Next available output_index for sequential assignment
+    pub next_output_index: u32,
+    /// Stored output_index for text message items
+    pub text_output_index: Option<u32>,
+    /// Stored output_index for reasoning items
+    pub reasoning_output_index: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +132,7 @@ pub struct ToolCallState {
     pub name: String,
     pub arguments: String,
     pub output_index: u32,     // Each tool call stores its own output_index
+    pub chat_api_index: u32,   // Original index from Chat API chunk (for matching)
     pub last_args_len: usize,  // Track for delta calculation
 }
 
@@ -132,7 +142,6 @@ impl StreamState {
         Self {
             response_id: response_id.clone(),
             output_id: format!("msg_{}", response_id),
-            output_index: 0,
             content_index: 0,
             full_text: String::new(),
             reasoning_text: String::new(),
@@ -148,6 +157,11 @@ impl StreamState {
             input_tokens: None,
             output_tokens: None,
             total_tokens: None,
+            thinking_buffer: String::new(),
+            is_thinking: false,
+            next_output_index: 0,
+            text_output_index: None,
+            reasoning_output_index: None,
         }
     }
 
@@ -273,15 +287,19 @@ pub fn chat_chunk_to_response_events(
                 if !reasoning.is_empty() {
                     if !state.is_reasoning_added {
                         let reasoning_id = format!("reasoning_{}", id);
+                        let reasoning_idx = state.next_output_index;
+                        state.next_output_index += 1;
+                        state.reasoning_output_index = Some(reasoning_idx);
                         events.push(ResponseStreamEvent::ReasoningAdded {
-                            output_index: 0,
+                            output_index: reasoning_idx,
                             item_id: reasoning_id.clone(),
                         });
                         state.is_reasoning_added = true;
                     }
+                    let reasoning_idx = state.reasoning_output_index.unwrap_or(0);
                     events.push(ResponseStreamEvent::ReasoningDelta {
                         item_id: format!("reasoning_{}", id),
-                        output_index: 0,
+                        output_index: reasoning_idx,
                         content_index: 0,
                         delta: reasoning.clone(),
                     });
@@ -301,30 +319,68 @@ pub fn chat_chunk_to_response_events(
                 };
 
                 if !text.is_empty() {
-                    if !state.is_output_item_added {
-                        events.push(ResponseStreamEvent::OutputItemAdded {
-                            output_index: 0,
-                            item_id: state.output_id.clone(),
-                            item_type: "message".to_string(),
-                            role: Some("assistant".to_string()),
-                            call_id: None,
-                        });
-                        events.push(ResponseStreamEvent::ContentPartAdded {
-                            item_id: state.output_id.clone(),
-                            output_index: 0,
-                            content_index: 0,
-                        });
-                        state.is_output_item_added = true;
-                        state.is_content_part_added = true;
+                    // Parse thinking tags (<think> or <thought>) from content
+                    let (actual_text, reasoning_delta, new_is_thinking) =
+                        parse_streaming_thinking(&text, state.is_thinking, &mut state.thinking_buffer);
+
+                    state.is_thinking = new_is_thinking;
+
+                    // Emit reasoning events if we have reasoning content
+                    if let Some(reasoning) = reasoning_delta {
+                        if !reasoning.is_empty() {
+                            if !state.is_reasoning_added {
+                                let reasoning_id = format!("reasoning_{}", id);
+                                let reasoning_idx = state.next_output_index;
+                                state.next_output_index += 1;
+                                state.reasoning_output_index = Some(reasoning_idx);
+                                events.push(ResponseStreamEvent::ReasoningAdded {
+                                    output_index: reasoning_idx,
+                                    item_id: reasoning_id.clone(),
+                                });
+                                state.is_reasoning_added = true;
+                            }
+                            let reasoning_idx = state.reasoning_output_index.unwrap_or(0);
+                            events.push(ResponseStreamEvent::ReasoningDelta {
+                                item_id: format!("reasoning_{}", id),
+                                output_index: reasoning_idx,
+                                content_index: 0,
+                                delta: reasoning.clone(),
+                            });
+                            state.reasoning_text.push_str(&reasoning);
+                        }
                     }
 
-                    events.push(ResponseStreamEvent::OutputTextDelta {
-                        item_id: state.output_id.clone(),
-                        output_index: 0,
-                        content_index: 0,
-                        delta: text.clone(),
-                    });
-                    state.full_text.push_str(&text);
+                    // Emit text events if we have actual content
+                    if !actual_text.is_empty() {
+                        if !state.is_output_item_added {
+                            let text_idx = state.next_output_index;
+                            state.next_output_index += 1;
+                            state.text_output_index = Some(text_idx);
+                            events.push(ResponseStreamEvent::OutputItemAdded {
+                                output_index: text_idx,
+                                item_id: state.output_id.clone(),
+                                item_type: "message".to_string(),
+                                role: Some("assistant".to_string()),
+                                call_id: None,
+                            });
+                            events.push(ResponseStreamEvent::ContentPartAdded {
+                                item_id: state.output_id.clone(),
+                                output_index: text_idx,
+                                content_index: 0,
+                            });
+                            state.is_output_item_added = true;
+                            state.is_content_part_added = true;
+                        }
+
+                        let text_idx = state.text_output_index.unwrap_or(0);
+                        events.push(ResponseStreamEvent::OutputTextDelta {
+                            item_id: state.output_id.clone(),
+                            output_index: text_idx,
+                            content_index: 0,
+                            delta: actual_text.clone(),
+                        });
+                        state.full_text.push_str(&actual_text);
+                    }
                 }
             }
 
@@ -340,45 +396,50 @@ pub fn chat_chunk_to_response_events(
                         // Has ID -> match by upstream_id
                         state.current_tool_calls.iter().position(|t| t.upstream_id.as_ref() == Some(tc_id))
                     } else {
-                        // No ID (incremental arguments chunk) -> match by index
-                        state.current_tool_calls.iter().position(|t| t.output_index == tc.index + 1)
+                        // No ID (incremental arguments chunk) -> match by chat_api_index
+                        state.current_tool_calls.iter().position(|t| t.chat_api_index == tc.index)
                     };
                     tracing::debug!("[TOOL_CALL] existing_idx={:?}, tc.index={}", existing_idx, tc.index);
 
-                    if existing_idx.is_none() && tc.id.is_some() {
-                        // New tool call (has id) - use tc.index + 1 as output_index (text=0, reasoning=0, first func_call=1)
-                        let tc_id = tc.id.as_ref().unwrap().clone();
-                        let func_output_index = tc.index + 1;
-                        let func_id = format!("func_{}_{}", func_output_index, id);
-                        tracing::debug!("[TOOL_CALL] Creating new tool call: func_id={}, output_index={}", func_id, func_output_index);
-                        events.push(ResponseStreamEvent::OutputItemAdded {
-                            output_index: func_output_index,
-                            item_id: func_id.clone(),
-                            item_type: "function_call".to_string(),
-                            role: None,
-                            call_id: Some(func_id.clone()),
-                        });
-                        state.is_function_call_item_added = true;
+                    if existing_idx.is_none() {
+                        if let Some(tc_id) = tc.id.clone() {
+                            // New tool call (has id) - assign sequential output_index
+                            let func_output_index = state.next_output_index;
+                            state.next_output_index += 1;
+                            let func_id = format!("func_{}_{}", func_output_index, id);
+                            tracing::debug!("[TOOL_CALL] Creating new tool call: func_id={}, output_index={}", func_id, func_output_index);
+                            events.push(ResponseStreamEvent::OutputItemAdded {
+                                output_index: func_output_index,
+                                item_id: func_id.clone(),
+                                item_type: "function_call".to_string(),
+                                role: None,
+                                call_id: Some(func_id.clone()),
+                            });
+                            state.is_function_call_item_added = true;
 
-                        let initial_name = tc.function.name.clone().unwrap_or_default();
-                        let initial_args = tc.function.arguments.clone().unwrap_or_default();
-                        let tc_state = ToolCallState {
-                            upstream_id: Some(tc_id),
-                            id: func_id.clone(),
-                            name: initial_name,
-                            arguments: initial_args.clone(),
-                            output_index: func_output_index,
-                            last_args_len: initial_args.len(),
-                        };
+                            let initial_name = tc.function.name.clone().unwrap_or_default();
+                            let initial_args = tc.function.arguments.clone().unwrap_or_default();
+                            let tc_state = ToolCallState {
+                                upstream_id: Some(tc_id),
+                                id: func_id.clone(),
+                                name: initial_name,
+                                arguments: initial_args.clone(),
+                                output_index: func_output_index,
+                                chat_api_index: tc.index,
+                                last_args_len: initial_args.len(),
+                            };
 
-                        state.current_tool_calls.push(tc_state);
+                            state.current_tool_calls.push(tc_state);
 
-                        events.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
-                            output_index: func_output_index,
-                            item_id: func_id,
-                            delta: initial_args,
-                        });
-                        tracing::debug!("[TOOL_CALL] Emitted OutputItemAdded and FunctionCallArgumentsDelta, total events now: {}", events.len());
+                            events.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
+                                output_index: func_output_index,
+                                item_id: func_id,
+                                delta: initial_args,
+                            });
+                            tracing::debug!("[TOOL_CALL] Emitted OutputItemAdded and FunctionCallArgumentsDelta, total events now: {}", events.len());
+                        } else {
+                            tracing::debug!("[TOOL_CALL] Skipping tool call - no id and no matching index {}", tc.index);
+                        }
                     } else if let Some(idx) = existing_idx {
                         // Existing tool call - accumulate arguments and emit delta
                         let tc_state = &mut state.current_tool_calls[idx];
@@ -415,9 +476,6 @@ pub fn chat_chunk_to_response_events(
                                 tc_state.name = name.clone();
                             }
                         }
-                    } else {
-                        // No id and no matching index - this is truly malformed
-                        tracing::debug!("[TOOL_CALL] Skipping tool call - no id and no matching index {}", tc.index);
                     }
                 }
             }
@@ -452,18 +510,19 @@ pub fn chat_chunk_to_response_events(
                     }
                     // Finalize text output (if any)
                     if state.is_output_item_added {
+                        let text_idx = state.text_output_index.unwrap_or(0);
                         events.push(ResponseStreamEvent::OutputTextDone {
                             item_id: state.output_id.clone(),
-                            output_index: 0,
+                            output_index: text_idx,
                             content_index: 0,
                         });
                         events.push(ResponseStreamEvent::ContentPartDone {
                             item_id: state.output_id.clone(),
-                            output_index: 0,
+                            output_index: text_idx,
                             content_index: 0,
                         });
                         events.push(ResponseStreamEvent::OutputItemDone {
-                            output_index: 0,
+                            output_index: text_idx,
                             item_id: state.output_id.clone(),
                             item_type: "message".to_string(),
                             role: Some("assistant".to_string()),
@@ -473,8 +532,9 @@ pub fn chat_chunk_to_response_events(
                         });
                     }
                     if state.is_reasoning_added {
+                        let reasoning_idx = state.reasoning_output_index.unwrap_or(0);
                         events.push(ResponseStreamEvent::OutputItemDone {
-                            output_index: 0,
+                            output_index: reasoning_idx,
                             item_id: format!("reasoning_{}", id),
                             item_type: "reasoning".to_string(),
                             role: None,
@@ -522,18 +582,19 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
     }
 
     if state.is_output_item_added {
+        let text_idx = state.text_output_index.unwrap_or(0);
         events.push(ResponseStreamEvent::OutputTextDone {
             item_id: state.output_id.clone(),
-            output_index: 0,
+            output_index: text_idx,
             content_index: 0,
         });
         events.push(ResponseStreamEvent::ContentPartDone {
             item_id: state.output_id.clone(),
-            output_index: 0,
+            output_index: text_idx,
             content_index: 0,
         });
         events.push(ResponseStreamEvent::OutputItemDone {
-            output_index: 0,
+            output_index: text_idx,
             item_id: state.output_id.clone(),
             item_type: "message".to_string(),
             role: Some("assistant".to_string()),
@@ -544,8 +605,9 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
     }
 
     if state.is_reasoning_added {
+        let reasoning_idx = state.reasoning_output_index.unwrap_or(0);
         events.push(ResponseStreamEvent::OutputItemDone {
-            output_index: 0,
+            output_index: reasoning_idx,
             item_id: format!("reasoning_{}", id),
             item_type: "reasoning".to_string(),
             role: None,
@@ -715,6 +777,146 @@ fn escape_json_string(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
+/// Maximum size for the thinking buffer (1MB) to prevent unbounded growth.
+const MAX_THINKING_BUFFER_SIZE: usize = 1024 * 1024;
+
+/// Parse thinking tags from streaming content.
+///
+/// Handles `<think>...</think>` and `<thought>...</thought>` tags that may be
+/// split across multiple chunks. Returns (actual_text, reasoning_delta, new_is_thinking).
+///
+/// The `buffer` is used to accumulate incomplete tag content across chunks.
+fn parse_streaming_thinking(
+    text: &str,
+    is_thinking: bool,
+    buffer: &mut String,
+) -> (String, Option<String>, bool) {
+    let mut actual_text = String::new();
+    let mut reasoning = String::new();
+    let mut current_is_thinking = is_thinking;
+
+    // Append to buffer for tag detection
+    buffer.push_str(text);
+
+    // Prevent unbounded buffer growth: if buffer exceeds limit, flush as reasoning
+    if buffer.len() > MAX_THINKING_BUFFER_SIZE {
+        let flushed = buffer.clone();
+        buffer.clear();
+        return (String::new(), Some(flushed), false);
+    }
+
+    let full_content = buffer.clone();
+    buffer.clear();
+
+    let mut pos = 0;
+    let chars: Vec<char> = full_content.chars().collect();
+
+    while pos < chars.len() {
+        if current_is_thinking {
+            // Look for closing tags: <think> or </thought>
+            let think_close = find_pattern(&chars, pos, &['<', '/', 't', 'h', 'i', 'n', 'k', '>']);
+            let thought_close = find_pattern(&chars, pos, &['<', '/', 't', 'h', 'o', 'u', 'g', 'h', 't', '>']);
+
+            match (think_close, thought_close) {
+                (Some(close_pos), Some(thought_close_pos)) => {
+                    if close_pos <= thought_close_pos {
+                        // Found <think> first
+                        let content: String = chars[pos..close_pos].iter().collect();
+                        reasoning.push_str(&content);
+                        pos = close_pos + 8; // len("</think>")
+                        current_is_thinking = false;
+                    } else {
+                        // Found </thought> first
+                        let content: String = chars[pos..thought_close_pos].iter().collect();
+                        reasoning.push_str(&content);
+                        pos = thought_close_pos + 10; // len("</thought>")
+                        current_is_thinking = false;
+                    }
+                }
+                (Some(close_pos), None) => {
+                    let content: String = chars[pos..close_pos].iter().collect();
+                    reasoning.push_str(&content);
+                    pos = close_pos + 8;
+                    current_is_thinking = false;
+                }
+                (None, Some(thought_close_pos)) => {
+                    let content: String = chars[pos..thought_close_pos].iter().collect();
+                    reasoning.push_str(&content);
+                    pos = thought_close_pos + 10;
+                    current_is_thinking = false;
+                }
+                (None, None) => {
+                    // No closing tag found, keep in buffer for next chunk
+                    let remaining: String = chars[pos..].iter().collect();
+                    buffer.push_str(&remaining);
+                    break;
+                }
+            }
+        } else {
+            // Look for opening tags: <think> or <thought>
+            let think_open = find_pattern(&chars, pos, &['<', 't', 'h', 'i', 'n', 'k', '>']);
+            let thought_open = find_pattern(&chars, pos, &['<', 't', 'h', 'o', 'u', 'g', 'h', 't', '>']);
+
+            match (think_open, thought_open) {
+                (Some(open_pos), Some(thought_open_pos)) => {
+                    if open_pos <= thought_open_pos {
+                        // Found <think> first
+                        let content: String = chars[pos..open_pos].iter().collect();
+                        actual_text.push_str(&content);
+                        pos = open_pos + 7; // len("<think>")
+                        current_is_thinking = true;
+                    } else {
+                        // Found <thought> first
+                        let content: String = chars[pos..thought_open_pos].iter().collect();
+                        actual_text.push_str(&content);
+                        pos = thought_open_pos + 9; // len("<thought>")
+                        current_is_thinking = true;
+                    }
+                }
+                (Some(open_pos), None) => {
+                    let content: String = chars[pos..open_pos].iter().collect();
+                    actual_text.push_str(&content);
+                    pos = open_pos + 7;
+                    current_is_thinking = true;
+                }
+                (None, Some(thought_open_pos)) => {
+                    let content: String = chars[pos..thought_open_pos].iter().collect();
+                    actual_text.push_str(&content);
+                    pos = thought_open_pos + 9;
+                    current_is_thinking = true;
+                }
+                (None, None) => {
+                    // No opening tag found, rest is actual text
+                    let remaining: String = chars[pos..].iter().collect();
+                    actual_text.push_str(&remaining);
+                    break;
+                }
+            }
+        }
+    }
+
+    let reasoning_delta = if reasoning.is_empty() {
+        None
+    } else {
+        Some(reasoning)
+    };
+
+    (actual_text, reasoning_delta, current_is_thinking)
+}
+
+/// Find a pattern in char array starting from pos.
+fn find_pattern(chars: &[char], start: usize, pattern: &[char]) -> Option<usize> {
+    if start + pattern.len() > chars.len() {
+        return None;
+    }
+    for i in start..=chars.len() - pattern.len() {
+        if chars[i..i + pattern.len()] == *pattern {
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,5 +985,71 @@ mod tests {
         assert!(!state.current_tool_calls.is_empty());
         let tc = state.current_tool_calls.first().unwrap();
         assert_eq!(tc.name, "get_weather");
+    }
+
+    #[test]
+    fn test_parse_streaming_thinking_basic() {
+        let mut buffer = String::new();
+
+        // No thinking tags
+        let (actual, reasoning, is_thinking) = parse_streaming_thinking("Hello world", false, &mut buffer);
+        assert_eq!(actual, "Hello world");
+        assert!(reasoning.is_none());
+        assert!(!is_thinking);
+    }
+
+    #[test]
+    fn test_parse_streaming_thinking_with_think_tag() {
+        let mut buffer = String::new();
+
+        // Complete <think> tag
+        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
+            "<think>\nreasoning\n</think>\n\nactual text",
+            false,
+            &mut buffer,
+        );
+        assert_eq!(actual, "\n\nactual text");
+        assert_eq!(reasoning, Some("\nreasoning\n".to_string()));
+        assert!(!is_thinking);
+    }
+
+    #[test]
+    fn test_parse_streaming_thinking_chunked() {
+        let mut buffer = String::new();
+
+        // First chunk: partial thinking tag
+        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
+            "<think>\npartial",
+            false,
+            &mut buffer,
+        );
+        assert_eq!(actual, "");
+        assert!(reasoning.is_none());
+        assert!(is_thinking);
+
+        // Second chunk: rest of thinking and closing tag
+        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
+            " content\n</think>\n\nfinal",
+            is_thinking,
+            &mut buffer,
+        );
+        assert_eq!(actual, "\n\nfinal");
+        assert_eq!(reasoning, Some("\npartial content\n".to_string()));
+        assert!(!is_thinking);
+    }
+
+    #[test]
+    fn test_parse_streaming_thought_tag() {
+        let mut buffer = String::new();
+
+        // <thought> tag
+        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
+            "<thought>reasoning</thought>actual",
+            false,
+            &mut buffer,
+        );
+        assert_eq!(actual, "actual");
+        assert_eq!(reasoning, Some("reasoning".to_string()));
+        assert!(!is_thinking);
     }
 }

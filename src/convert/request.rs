@@ -4,7 +4,7 @@ use crate::error::ConversionError;
 use crate::providers::Provider;
 use crate::types::chat_api::{
     ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolChoiceMode, Content, ContentBlock,
-    FunctionCall, FunctionChoice, FunctionDefinition, MessageRole, ToolCall,
+    FunctionCall, FunctionChoice, FunctionDefinition, MessageRole, StreamOptions, ToolCall,
 };
 use crate::types::response_api::{
     Content as ResponseContent, ContentPart, InputItemOrString,
@@ -38,7 +38,11 @@ pub fn response_to_chat(
         max_tokens: response_req.max_tokens,
         top_p: response_req.top_p,
         user: response_req.user,
-        stream_options: None,
+        stream_options: if response_req.stream {
+            Some(StreamOptions { include_usage: Some(true) })
+        } else {
+            None
+        },
     };
 
     // Apply min_tokens floor validation (some providers reject max_tokens < 16)
@@ -86,19 +90,19 @@ fn convert_input_to_messages(
             let mut pending_tool_calls: Option<Vec<ToolCall>> = None;
 
             for item in items {
-                // If previous item had tool_calls, attach them to an assistant message
-                if let Some(tool_calls) = pending_tool_calls.take() {
-                    messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: Content::String(String::new()),
-                        name: None,
-                        tool_calls: Some(tool_calls),
-                        tool_call_id: None,
-                    });
-                }
-
                 match item.item_type {
                     crate::types::response_api::InputItemType::Message => {
+                        // Flush pending tool calls before Message items
+                        if let Some(tool_calls) = pending_tool_calls.take() {
+                            messages.push(ChatMessage {
+                                role: MessageRole::Assistant,
+                                content: Content::String(String::new()),
+                                name: None,
+                                tool_calls: Some(tool_calls),
+                                tool_call_id: None,
+                            });
+                        }
+
                         let role = match item.role.as_deref() {
                             Some("developer") => MessageRole::Developer,
                             Some("system") => MessageRole::System,
@@ -117,11 +121,13 @@ fn convert_input_to_messages(
                         });
                     }
                     crate::types::response_api::InputItemType::FunctionCall => {
+                        // Accumulate FunctionCall items into pending_tool_calls
                         let arguments = item.arguments.unwrap_or_default();
                         let name = item
                             .name
                             .ok_or_else(|| ConversionError::MissingField("name".to_string()))?;
-                        let id = item.id.unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
+                        // Use call_id to match FunctionCallOutput's call_id reference
+                        let id = item.call_id.or(item.id).unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
 
                         let tool_call = ToolCall {
                             id,
@@ -132,6 +138,17 @@ fn convert_input_to_messages(
                         pending_tool_calls.get_or_insert_with(Vec::new).push(tool_call);
                     }
                     crate::types::response_api::InputItemType::FunctionCallOutput => {
+                        // Flush pending tool calls before FunctionCallOutput
+                        if let Some(tool_calls) = pending_tool_calls.take() {
+                            messages.push(ChatMessage {
+                                role: MessageRole::Assistant,
+                                content: Content::String(String::new()),
+                                name: None,
+                                tool_calls: Some(tool_calls),
+                                tool_call_id: None,
+                            });
+                        }
+
                         messages.push(ChatMessage {
                             role: MessageRole::Tool,
                             content: Content::String(item.output.unwrap_or_default()),

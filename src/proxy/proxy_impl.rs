@@ -395,10 +395,7 @@ impl ProxyHttp for CodexProxy {
                                     ctx.is_stream_response = true;
                                     let model = ctx.model.clone().unwrap_or_else(|| "unknown".to_string());
                                     ctx.stream_state = Some(StreamState::new(
-                                        json.get("id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("default")
-                                            .to_string(),
+                                        format!("resp_{}", uuid::Uuid::new_v4()),
                                         model,
                                     ));
                                 }
@@ -434,10 +431,7 @@ impl ProxyHttp for CodexProxy {
                                 ctx.is_stream_response = true;
                                 let model = ctx.model.clone().unwrap_or_else(|| "unknown".to_string());
                                 ctx.stream_state = Some(StreamState::new(
-                                    json.get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("default")
-                                        .to_string(),
+                                    format!("resp_{}", uuid::Uuid::new_v4()),
                                     model,
                                 ));
                             }
@@ -491,8 +485,14 @@ impl ProxyHttp for CodexProxy {
         if let Some(b) = body_clone.as_ref() {
             ctx.response_body.extend_from_slice(b);
 
-            // For streaming responses, convert each SSE chunk
-            if ctx.is_streaming {
+            // Suppress intermediate chunks for non-streaming conversion requests
+            // (the converted body will be sent at end_of_body)
+            if !ctx.is_streaming && ctx.is_conversion_request && !end_of_body {
+                *body = Some(Bytes::new());
+            }
+
+            // For streaming conversion responses, convert each SSE chunk
+            if ctx.is_streaming && ctx.is_conversion_request {
                 let text = std::str::from_utf8(b).unwrap_or("");
                 debug!("[STREAM_RAW] is_streaming=true, body={}", String::from_utf8_lossy(b).chars().take(200).collect::<String>());
                 let mut converted_chunks: Vec<String> = Vec::new();
@@ -518,7 +518,7 @@ impl ProxyHttp for CodexProxy {
                     // Handle "[DONE]"
                     if rest.starts_with("[DONE]") {
                         converted_chunks.push("data: [DONE]\n\n".to_string());
-                        search_pos = after_data_prefix + 7;
+                        search_pos = after_data_prefix + 6; // "[DONE]" is 6 chars
                         if search_pos + 1 < text.len() && text[search_pos..].starts_with("\n\n") {
                             search_pos += 2;
                         }
@@ -611,6 +611,35 @@ impl ProxyHttp for CodexProxy {
                     }
                 }
 
+                // For streaming responses, append response.completed event at end_of_body
+                if end_of_body {
+                    if let Some(ref mut state) = ctx.stream_state {
+                        if !state.is_completed {
+                            let response_obj = state.build_response_object();
+                            debug!(
+                                "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}",
+                                response_obj.id,
+                                response_obj.output.len(),
+                                state.is_reasoning_added,
+                                state.is_output_item_added,
+                                state.completed_tool_calls.len()
+                            );
+                            if self.log_body {
+                                if let Ok(json) = serde_json::to_string(&response_obj) {
+                                    debug!("[STREAM_COMPLETE_JSON] {}", json);
+                                }
+                            }
+                            let completed_event = crate::convert::ResponseStreamEvent::Completed {
+                                response: response_obj,
+                            };
+                            let mut sse_data = crate::convert::event_to_sse(&completed_event);
+                            sse_data.push_str("data: [DONE]\n\n");
+                            converted_chunks.push(sse_data);
+                            state.is_completed = true;
+                        }
+                    }
+                }
+
                 if !converted_chunks.is_empty() {
                     *body = Some(Bytes::from(converted_chunks.join("")));
                 }
@@ -620,8 +649,8 @@ impl ProxyHttp for CodexProxy {
         if end_of_body {
             let duration_ms = ctx.start_time.elapsed().as_millis() as u64;
 
-            // For non-streaming responses, convert the full body
-            if !ctx.is_streaming && !ctx.response_body.is_empty() {
+            // For non-streaming conversion responses, convert the full body
+            if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty() {
                 if let Ok(text) = std::str::from_utf8(&ctx.response_body) {
                     if let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
                         match crate::convert::chat_to_response(chat_resp) {
@@ -637,37 +666,6 @@ impl ProxyHttp for CodexProxy {
                                 error!("Failed to convert response: {}", e);
                             }
                         }
-                    }
-                }
-            }
-
-            // For streaming responses, send response.completed event with full output
-            if ctx.is_streaming {
-                if let Some(ref mut state) = ctx.stream_state {
-                    if !state.is_completed {
-                        // Build the full response object with all accumulated outputs
-                        let response_obj = state.build_response_object();
-                        debug!(
-                            "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}",
-                            response_obj.id,
-                            response_obj.output.len(),
-                            state.is_reasoning_added,
-                            state.is_output_item_added,
-                            state.completed_tool_calls.len()
-                        );
-                        if self.log_body {
-                            if let Ok(json) = serde_json::to_string(&response_obj) {
-                                debug!("[STREAM_COMPLETE_JSON] {}", json);
-                            }
-                        }
-                        let completed_event = crate::convert::ResponseStreamEvent::Completed {
-                            response: response_obj,
-                        };
-                        let mut sse_data = crate::convert::event_to_sse(&completed_event);
-                        // Append [DONE] marker as per SSE spec
-                        sse_data.push_str("data: [DONE]\n\n");
-                        *body = Some(Bytes::from(sse_data));
-                        state.is_completed = true;
                     }
                 }
             }
@@ -765,12 +763,15 @@ impl ProxyHttp for CodexProxy {
             e
         );
 
-        // Return error response
-        let error_body = format!(
-            r#"{{"error": {{"type": "proxy_error", "code": {}, "message": "{}"}}}}"#,
-            code,
-            e
-        );
+        // Return error response (use serde_json for proper escaping)
+        let error_body = serde_json::json!({
+            "error": {
+                "type": "proxy_error",
+                "code": code,
+                "message": e.to_string()
+            }
+        })
+        .to_string();
         if let Ok(mut resp) = pingora_http::ResponseHeader::build(code, None) {
             let _ = resp.insert_header("content-type", "application/json");
             let _ = resp.insert_header("content-length", &error_body.len().to_string());
