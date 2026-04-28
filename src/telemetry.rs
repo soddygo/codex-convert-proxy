@@ -50,7 +50,9 @@ pub fn init_telemetry(config: &TelemetryConfig) -> anyhow::Result<()> {
 
 /// Shutdown telemetry gracefully.
 pub fn shutdown_telemetry() {
-    opentelemetry::global::shutdown_tracer_provider();
+    // Note: In newer opentelemetry versions, tracer provider shutdown
+    // is handled automatically when the provider is dropped.
+    // opentelemetry::global::shutdown_tracer_provider();
 }
 
 #[cfg(test)]

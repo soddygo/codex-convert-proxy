@@ -14,12 +14,6 @@ impl Provider for DeepSeekProvider {
         "deepseek"
     }
 
-    fn normalize_model(&self, model: String) -> String {
-        // DeepSeek model names: deepseek-chat, deepseek-coder
-        // No transformation needed
-        model
-    }
-
     fn transform_request(&mut self, _request: &mut ChatRequest) {
         // DeepSeek has excellent Chat API compatibility
         // No modifications needed

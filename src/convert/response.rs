@@ -56,6 +56,7 @@ pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, Conve
         model: chat_resp.model,
         created_at: chat_resp.created as i64,
         completed_at: Some(chrono::Utc::now().timestamp()),
+        input: None,  // Input not available in non-streaming context
         output: outputs,
         usage,
     })

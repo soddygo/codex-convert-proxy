@@ -16,14 +16,20 @@ use crate::types::response_api::{
 pub fn response_to_chat(
     response_req: ResponseRequest,
     provider: &mut dyn Provider,
+    model_override: Option<&str>,
 ) -> Result<ChatRequest, ConversionError> {
     let messages = convert_input_to_messages(response_req.input, response_req.instructions)?;
     let tools = convert_tools(response_req.tools);
     let tool_choice = convert_tool_choice(response_req.tool_choice);
 
+    // Use model from config if specified, otherwise use provider's model normalization
+    let model = model_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| provider.normalize_model(response_req.model));
+
     // Apply provider-specific transformations
     let mut chat_req = ChatRequest {
-        model: provider.normalize_model(response_req.model),
+        model,
         messages,
         tools: Some(tools).filter(|t| !t.is_empty()),
         tool_choice: Some(tool_choice).filter(|tc| !tc.is_none()),
@@ -300,7 +306,7 @@ mod tests {
         };
 
         let mut provider = GLMProvider;
-        let chat_req = response_to_chat(request, &mut provider).unwrap();
+        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         // First message should be system
         let first = chat_req.messages.first().unwrap();
@@ -338,7 +344,7 @@ mod tests {
         };
 
         let mut provider = GLMProvider;
-        let chat_req = response_to_chat(request, &mut provider).unwrap();
+        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         // Should have an assistant message with tool_calls
         let msg = chat_req.messages.first().unwrap();
@@ -387,7 +393,7 @@ mod tests {
         };
 
         let mut provider = GLMProvider;
-        let chat_req = response_to_chat(request, &mut provider).unwrap();
+        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         // Should have assistant message with tool_calls and tool message
         assert_eq!(chat_req.messages.len(), 2);

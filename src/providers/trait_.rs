@@ -6,7 +6,7 @@ use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
 /// Provider trait for LLM provider-specific transformations.
 ///
 /// Each Chinese LLM provider may have slightly different API requirements
-/// or model name formats that need to be normalized.
+/// or model name formats that need to be normalized.ni
 pub trait Provider: Send + Sync {
     /// Get provider name.
     fn name(&self) -> &'static str;
@@ -14,6 +14,13 @@ pub trait Provider: Send + Sync {
     /// Normalize model name from Responses API to provider's format.
     fn normalize_model(&self, model: String) -> String {
         model
+    }
+
+    /// Get the chat completions path for this provider.
+    /// Only returns the endpoint path, e.g., "/chat/completions".
+    /// The version prefix (e.g., "/v1") should come from the backend URL's base_path.
+    fn chat_completions_path(&self) -> String {
+        "/chat/completions".to_string()
     }
 
     /// Transform request before sending to provider.

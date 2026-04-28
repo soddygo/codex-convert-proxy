@@ -7,7 +7,6 @@ use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk, Content
 ///
 /// MiniMax specific handling:
 /// - Content must be string, not array
-/// - Model name may need normalization
 /// - Does not support 'developer' role, convert to 'user'
 pub struct MiniMaxProvider;
 
@@ -16,10 +15,9 @@ impl Provider for MiniMaxProvider {
         "minimax"
     }
 
-    fn normalize_model(&self, model: String) -> String {
-        // MiniMax usesab-01,ab-02 for their models
-        // No specific normalization needed
-        model
+    fn chat_completions_path(&self) -> String {
+        // MiniMax URL already includes /v1, so just /chat/completions
+        "/chat/completions".to_string()
     }
 
     fn transform_request(&mut self, request: &mut ChatRequest) {

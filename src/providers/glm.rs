@@ -8,7 +8,7 @@ use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
 /// GLM has some specific requirements:
 /// - Does not support function calling tools
 /// - Messages should be flattened to simple text format
-/// - May need model name normalization
+/// - API path is /chat/completions (not /v1/chat/completions)
 pub struct GLMProvider;
 
 impl Provider for GLMProvider {
@@ -16,10 +16,9 @@ impl Provider for GLMProvider {
         "glm"
     }
 
-    fn normalize_model(&self, model: String) -> String {
-        // GLM model naming: glm-4, glm-4-flash, glm-4-plus, glm-3
-        // No transformation needed as Responses API model names should match
-        model
+    fn chat_completions_path(&self) -> String {
+        // GLM uses /chat/completions not /v1/chat/completions
+        "/chat/completions".to_string()
     }
 
     fn transform_request(&mut self, request: &mut ChatRequest) {
@@ -29,6 +28,10 @@ impl Provider for GLMProvider {
 
         // Flatten message content to simple strings
         for message in &mut request.messages {
+            // GLM doesn't support developer role - convert to user
+            if message.role == crate::types::chat_api::MessageRole::Developer {
+                message.role = crate::types::chat_api::MessageRole::User;
+            }
             let text = message.content.as_text();
             message.content = crate::types::chat_api::Content::String(text);
         }

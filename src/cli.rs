@@ -45,8 +45,8 @@ pub struct StartArgs {
     pub api_key: Option<String>,
 
     /// Listen address.
-    #[arg(short, long, default_value = "0.0.0.0:8080")]
-    pub listen: String,
+    #[arg(short, long)]
+    pub listen: Option<String>,
 
     /// Log directory.
     #[arg(long, default_value = "./logs")]
@@ -99,6 +99,7 @@ impl StartArgs {
                 url: upstream_url.clone(),
                 api_key: api_key.clone(),
                 protocol: "openai".to_string(),
+                model: None,
                 match_rules: MatchRules {
                     default: true,
                     ..Default::default()
@@ -106,7 +107,9 @@ impl StartArgs {
             }];
         }
 
-        config.listen = self.listen.clone();
+        if let Some(listen) = &self.listen {
+            config.listen = listen.clone();
+        }
         config.log_dir = self.log_dir.to_string_lossy().to_string();
         config.log_body = self.log_body;
 
@@ -169,6 +172,7 @@ mod tests {
                 url: "https://api.example.com".to_string(),
                 api_key: "xxx".to_string(),
                 protocol: "openai".to_string(),
+                model: None,
                 match_rules: MatchRules::default(),
             },
             provider_name: "test".to_string(),

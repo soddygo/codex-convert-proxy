@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Root request type for Responses API (Codex → Proxy)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ResponseRequest {
     /// Model identifier
     pub model: String,
@@ -21,7 +21,7 @@ pub struct ResponseRequest {
     pub tools: Vec<Tool>,
 
     /// Tool choice policy
-    #[serde(rename = "tool_choice", default)]
+    #[serde(default)]
     pub tool_choice: ToolChoice,
 
     /// Streaming indicator
@@ -52,7 +52,7 @@ pub enum InputItemOrString {
 
 /// An item in the input array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct InputItem {
     pub id: Option<String>,
     #[serde(rename = "type")]
@@ -176,7 +176,7 @@ pub struct FunctionToolChoice {
 
 /// Response output item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ResponseOutputItem {
     pub id: String,
     #[serde(rename = "type")]
@@ -208,7 +208,7 @@ pub enum ResponseContentPart {
 
 /// Response object (Responses API format).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ResponseObject {
     pub id: String,
     pub object: String,
@@ -216,6 +216,8 @@ pub struct ResponseObject {
     pub model: String,
     pub created_at: i64,
     pub completed_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<serde_json::Value>>,
     pub output: Vec<ResponseOutputItem>,
     pub usage: Option<Usage>,
 }

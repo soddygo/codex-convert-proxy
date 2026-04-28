@@ -5,8 +5,9 @@
   "backends": [
     {
       "name": "glm",
-      "url": "https://api.minimax.chat",
+      "url": "https://open.bigmodel.cn/api/paas/v4",
       "api_key": "YOUR_API_KEY",
+      "model": "glm-4",
       "protocol": "openai",
       "match_rules": {
         "default": true
@@ -16,6 +17,7 @@
       "name": "kimi",
       "url": "https://api.moonshot.cn/v1",
       "api_key": "YOUR_API_KEY",
+      "model": "moonshot-v1-8k",
       "protocol": "openai",
       "match_rules": {
         "path_prefix": "/kimi"
@@ -25,6 +27,7 @@
       "name": "deepseek",
       "url": "https://api.deepseek.com/v1",
       "api_key": "YOUR_API_KEY",
+      "model": "deepseek-chat",
       "protocol": "openai",
       "match_rules": {
         "path_prefix": "/deepseek"
@@ -34,6 +37,7 @@
       "name": "minimax",
       "url": "https://api.minimax.chat/v1",
       "api_key": "YOUR_API_KEY",
+      "model": "MiniMax-M2.7-highspeed",
       "protocol": "openai",
       "match_rules": {
         "path_prefix": "/minimax"

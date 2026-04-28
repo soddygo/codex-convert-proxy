@@ -18,6 +18,9 @@ pub struct BackendConfig {
     /// API protocol: "openai" or "anthropic".
     #[serde(default = "default_protocol")]
     pub protocol: String,
+    /// Model to use for this backend (overrides request model).
+    #[serde(default)]
+    pub model: Option<String>,
     /// Match rules for routing.
     #[serde(default)]
     pub match_rules: MatchRules,
@@ -56,6 +59,7 @@ pub struct BackendInfo {
     pub base_path: String,
     pub api_key: String,
     pub protocol: String,
+    pub model: Option<String>,
 }
 
 impl BackendInfo {
@@ -81,6 +85,7 @@ impl BackendInfo {
             base_path,
             api_key: config.api_key.clone(),
             protocol: config.protocol.clone(),
+            model: config.model.clone(),
         })
     }
 
@@ -297,6 +302,7 @@ mod tests {
                 url: "https://api.anthropic.com".to_string(),
                 api_key: "sk-ant-xxx".to_string(),
                 protocol: "anthropic".to_string(),
+                model: None,
                 match_rules: MatchRules {
                     path_prefix: Some("/anthropic".to_string()),
                     ..Default::default()
@@ -307,6 +313,7 @@ mod tests {
                 url: "https://api.openai.com/v1".to_string(),
                 api_key: "sk-xxx".to_string(),
                 protocol: "openai".to_string(),
+                model: None,
                 match_rules: MatchRules {
                     path_prefix: Some("/openai".to_string()),
                     ..Default::default()
@@ -317,6 +324,7 @@ mod tests {
                 url: "https://api.example.com".to_string(),
                 api_key: "xxx".to_string(),
                 protocol: "openai".to_string(),
+                model: None,
                 match_rules: MatchRules {
                     default: true,
                     ..Default::default()
@@ -351,6 +359,7 @@ mod tests {
             base_path: String::new(),
             api_key: "test".to_string(),
             protocol: "anthropic".to_string(),
+            model: None,
         };
         assert!(info.use_anthropic_auth());
 

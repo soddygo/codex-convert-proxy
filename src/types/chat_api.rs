@@ -1,16 +1,20 @@
 //! Chat API types (Provider input/output format).
+//!
+//! All types use snake_case for serde because the OpenAI Chat API
+//! and compatible providers (DeepSeek, GLM, MiniMax, etc.) all use
+//! snake_case field names in their JSON.
 
 use serde::{Deserialize, Serialize};
 
 /// Root request type for Chat API (Proxy → LLM Provider).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ChatTool>>,
-    #[serde(rename = "tool_choice", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ChatToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
@@ -28,7 +32,7 @@ pub struct ChatRequest {
 
 /// Stream options for Chat API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct StreamOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_usage: Option<bool>,
@@ -36,7 +40,7 @@ pub struct StreamOptions {
 
 /// A chat message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatMessage {
     pub role: MessageRole,
     pub content: Content,
@@ -95,7 +99,7 @@ pub struct ContentBlock {
 
 /// A tool definition for Chat API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatTool {
     #[serde(rename = "type")]
     pub tool_type: String,
@@ -104,7 +108,7 @@ pub struct ChatTool {
 
 /// Function definition for a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct FunctionDefinition {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,14 +136,14 @@ pub enum ChatToolChoiceMode {
 
 /// Function choice for tool choice.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct FunctionChoice {
     pub name: String,
 }
 
 /// A tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ToolCall {
     pub id: String,
     #[serde(rename = "type")]
@@ -149,7 +153,7 @@ pub struct ToolCall {
 
 /// A function call within a tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
@@ -157,7 +161,7 @@ pub struct FunctionCall {
 
 /// Chat API Response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatResponse {
     pub id: String,
     #[serde(rename = "object")]
@@ -171,7 +175,7 @@ pub struct ChatResponse {
 
 /// A chat choice in the response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatChoice {
     pub index: u32,
     pub message: ChatMessage,
@@ -181,7 +185,7 @@ pub struct ChatChoice {
 
 /// Usage information for Chat API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u32>,
@@ -193,18 +197,20 @@ pub struct ChatUsage {
 
 /// Chat API streaming chunk.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatStreamChunk {
     pub id: Option<String>,
     pub object: Option<String>,
     pub created: Option<u64>,
     pub model: Option<String>,
     pub choices: Vec<ChatStreamChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ChatUsage>,
 }
 
 /// A streaming choice in a chunk.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatStreamChoice {
     pub index: u32,
     pub delta: Option<ChatDelta>,
@@ -214,7 +220,7 @@ pub struct ChatStreamChoice {
 
 /// Delta content in a streaming chunk.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ChatDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -228,17 +234,19 @@ pub struct ChatDelta {
 
 /// Tool call delta in streaming.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ToolCallDelta {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub tool_type: String,
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
     pub function: FunctionCallDelta,
 }
 
 /// Function call delta.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct FunctionCallDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
