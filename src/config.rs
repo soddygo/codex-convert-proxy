@@ -103,6 +103,22 @@ pub struct BackendRouter {
 }
 
 impl BackendRouter {
+    fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+        let normalized = if prefix != "/" {
+            prefix.trim_end_matches('/')
+        } else {
+            prefix
+        };
+        if normalized.is_empty() {
+            return false;
+        }
+        if path == normalized {
+            return true;
+        }
+        let with_slash = format!("{}/", normalized);
+        path.starts_with(&with_slash)
+    }
+
     /// Create a new backend router from configs.
     pub fn new(configs: Vec<BackendConfig>) -> anyhow::Result<Self> {
         if configs.is_empty() {
@@ -144,7 +160,7 @@ impl BackendRouter {
         for (config, info) in &self.backends {
             // Check path prefix match
             if let Some(ref prefix) = config.match_rules.path_prefix {
-                if path.starts_with(prefix) {
+                if Self::path_matches_prefix(path, prefix) {
                     debug!(
                         "Path '{}' matched backend '{}' (prefix: {})",
                         path, config.name, prefix
@@ -212,7 +228,7 @@ impl BackendRouter {
         for (config, info) in &self.backends {
             // Check path prefix
             if let Some(ref prefix) = config.match_rules.path_prefix {
-                if path.starts_with(prefix) {
+                if Self::path_matches_prefix(path, prefix) {
                     return Some((config, info));
                 }
             }
@@ -368,5 +384,38 @@ mod tests {
             ..info
         };
         assert!(!info.use_anthropic_auth());
+    }
+
+    #[test]
+    fn test_select_and_rewrite_with_responses_prefix() {
+        let configs = vec![
+            BackendConfig {
+                name: "kimi".to_string(),
+                url: "https://api.moonshot.cn/v1".to_string(),
+                api_key: "sk-kimi".to_string(),
+                protocol: "openai".to_string(),
+                model: None,
+                match_rules: MatchRules {
+                    path_prefix: Some("/kimi".to_string()),
+                    ..Default::default()
+                },
+            },
+            BackendConfig {
+                name: "default".to_string(),
+                url: "https://api.example.com".to_string(),
+                api_key: "sk-default".to_string(),
+                protocol: "openai".to_string(),
+                model: None,
+                match_rules: MatchRules {
+                    default: true,
+                    ..Default::default()
+                },
+            },
+        ];
+
+        let router = BackendRouter::new(configs).unwrap();
+        let (info, rewritten_path) = router.select_and_rewrite("/kimi/responses", &[]).unwrap();
+        assert_eq!(info.name, "kimi");
+        assert_eq!(rewritten_path, "/v1/responses");
     }
 }

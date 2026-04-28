@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::BackendRouter;
 use crate::config::BackendInfo;
-use crate::convert::{StreamState, response_to_chat};
+use crate::convert::{ResponseRequestContext, StreamState, response_to_chat};
 use crate::providers::Provider;
 use crate::types::response_api::ResponseRequest;
 
@@ -50,6 +50,20 @@ pub struct ProxyContext {
     pub chat_response_body: Vec<u8>,
     /// Whether this is a conversion request (Responses API -> Chat API).
     pub is_conversion_request: bool,
+    /// Offset in response_body that has been parsed (to avoid re-parsing events).
+    pub stream_body_parsed_offset: usize,
+    /// Request path after optional routing prefix stripping.
+    pub normalized_path: Option<String>,
+    /// Parsed original Responses request for protocol-aligned streaming events.
+    pub response_request_context: Option<ResponseRequestContext>,
+    /// Whether current upstream response should be converted as SSE stream.
+    pub should_convert_stream_response: bool,
+    /// Upstream status code captured in response_filter for diagnostics.
+    pub upstream_status: Option<u16>,
+    /// Upstream content-type captured in response_filter for diagnostics.
+    pub upstream_content_type: Option<String>,
+    /// Number of valid upstream chat stream chunks parsed.
+    pub stream_chunks_parsed: usize,
 }
 
 impl ProxyContext {
@@ -68,6 +82,13 @@ impl ProxyContext {
             is_stream_response: false,
             chat_response_body: Vec::new(),
             is_conversion_request: false,
+            stream_body_parsed_offset: 0,
+            normalized_path: None,
+            response_request_context: None,
+            should_convert_stream_response: false,
+            upstream_status: None,
+            upstream_content_type: None,
+            stream_chunks_parsed: 0,
         }
     }
 }
@@ -122,14 +143,6 @@ impl ProxyHttp for CodexProxy {
         let method = session.req_header().method.as_str().to_string();
         let path = session.req_header().uri.path().to_string();
 
-        // Check if this is a conversion request (Responses API -> Chat API)
-        let is_conversion = path.starts_with("/v1/responses") || path.starts_with("/responses");
-        ctx.is_conversion_request = is_conversion;
-
-        if is_conversion {
-            debug!("[REQUEST] {} {} -> {} (CONVERSION)", method, path, "conversion");
-        }
-
         // Collect headers for routing
         let headers: Vec<(String, String)> = session
             .req_header()
@@ -143,19 +156,41 @@ impl ProxyHttp for CodexProxy {
             })
             .collect();
 
-        // Select backend using router
-        let backend = match self.router.select(&path, &headers) {
-            Some(b) => b,
+        // Select backend with config to support path_prefix stripping.
+        let (backend_config, backend) = match self.router.select_with_config(&path, &headers) {
+            Some(pair) => pair,
             None => {
                 warn!("[REQUEST] No matching backend for path: {}", path);
                 return Err(pingora_core::Error::new_str("No matching backend"));
             }
         };
 
+        let normalized_path = if let Some(prefix) = backend_config.match_rules.path_prefix.as_deref() {
+            let stripped = path.strip_prefix(prefix).unwrap_or(path.as_str());
+            if stripped.is_empty() {
+                "/".to_string()
+            } else if stripped.starts_with('/') {
+                stripped.to_string()
+            } else {
+                format!("/{}", stripped)
+            }
+        } else {
+            path.clone()
+        };
+        ctx.normalized_path = Some(normalized_path.clone());
+
+        // Check if this is a conversion request (Responses API -> Chat API)
+        let is_conversion = normalized_path.starts_with("/v1/responses") || normalized_path.starts_with("/responses");
+        ctx.is_conversion_request = is_conversion;
+
+        if is_conversion {
+            debug!("[REQUEST] {} {} -> {} (CONVERSION)", method, normalized_path, "conversion");
+        }
+
         ctx.selected_backend = Some(backend.clone());
         ctx.provider_name = Some(backend.name.clone());
 
-        debug!("[REQUEST] {} {} -> {}", method, path, backend.name);
+        debug!("[REQUEST] {} {} -> {}", method, normalized_path, backend.name);
 
         // Return false to continue processing
         Ok(false)
@@ -213,13 +248,18 @@ impl ProxyHttp for CodexProxy {
         let original_uri = session.req_header().uri.clone();
         let path = original_uri.path().to_string();
         let query = original_uri.query();
+        let normalized_path = ctx.normalized_path.as_deref().unwrap_or(path.as_str());
 
         // Check if this is a conversion request (Responses API → Chat API)
-        let is_conversion_request = path.starts_with("/v1/responses") || path.starts_with("/responses");
+        let is_conversion_request = normalized_path.starts_with("/v1/responses")
+            || normalized_path.starts_with("/responses");
 
         // Get the provider's chat completions path (may differ per provider)
         // Handle Responses API paths (/v1/responses, /responses) and also Chat API paths (/v1/chat/completions)
-        let chat_api_path = if path.starts_with("/v1/responses") || path.starts_with("/responses") || path.starts_with("/v1/chat/completions") {
+        let chat_api_path = if normalized_path.starts_with("/v1/responses")
+            || normalized_path.starts_with("/responses")
+            || normalized_path.starts_with("/v1/chat/completions")
+        {
             // Get provider and use its chat_completions_path
             if let Some(provider) = self.get_provider(&backend.name) {
                 provider.chat_completions_path()
@@ -228,7 +268,7 @@ impl ProxyHttp for CodexProxy {
                 "/v1/chat/completions".to_string()
             }
         } else {
-            path.clone()
+            normalized_path.to_string()
         };
 
         // Prepend backend's base_path (e.g., /api/coding/paas/v4 for GLM)
@@ -331,6 +371,8 @@ impl ProxyHttp for CodexProxy {
                         // Parse as ResponseRequest
                         match serde_json::from_slice::<ResponseRequest>(&ctx.request_body) {
                             Ok(response_req) => {
+                                ctx.response_request_context =
+                                    Some(ResponseRequestContext::from(&response_req));
                                 // Convert using provider
                                 match response_to_chat(response_req, provider.as_mut(), model_override) {
                                     Ok(chat_req) => {
@@ -397,6 +439,7 @@ impl ProxyHttp for CodexProxy {
                                     ctx.stream_state = Some(StreamState::new(
                                         format!("resp_{}", uuid::Uuid::new_v4()),
                                         model,
+                                        ctx.response_request_context.clone(),
                                     ));
                                 }
                             }
@@ -433,6 +476,7 @@ impl ProxyHttp for CodexProxy {
                                 ctx.stream_state = Some(StreamState::new(
                                     format!("resp_{}", uuid::Uuid::new_v4()),
                                     model,
+                                    ctx.response_request_context.clone(),
                                 ));
                             }
                         }
@@ -451,11 +495,51 @@ impl ProxyHttp for CodexProxy {
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> PingoraResult<()> {
+        let status = upstream_response.status.as_u16();
+        let content_type = upstream_response
+            .headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let is_sse = content_type.to_ascii_lowercase().contains("text/event-stream");
+        let is_success = (200..300).contains(&status);
+
+        ctx.upstream_status = Some(status);
+        ctx.upstream_content_type = Some(content_type.clone());
+        ctx.should_convert_stream_response =
+            ctx.is_streaming && ctx.is_conversion_request && is_success && is_sse;
+
+        if ctx.is_conversion_request {
+            upstream_response.remove_header("content-length");
+            debug!(
+                "[RESPONSE] removed content-length for conversion response (status={}, content_type={})",
+                status,
+                content_type
+            );
+        }
+
+        if ctx.is_streaming && ctx.is_conversion_request && !ctx.should_convert_stream_response {
+            warn!(
+                "[RESPONSE] bypass stream conversion: status={}, content_type='{}', reason={}",
+                status,
+                content_type,
+                if !is_success {
+                    "upstream_non_2xx"
+                } else if !is_sse {
+                    "upstream_not_sse"
+                } else {
+                    "unknown"
+                }
+            );
+        }
+
         debug!(
-            "[RESPONSE] Status: {}, is_streaming: {}, is_conversion: {}",
-            upstream_response.status.as_u16(),
+            "[RESPONSE] status={}, is_streaming={}, is_conversion={}, should_convert_stream={}",
+            status,
             ctx.is_streaming,
-            ctx.is_conversion_request
+            ctx.is_conversion_request,
+            ctx.should_convert_stream_response
         );
         Ok(())
     }
@@ -492,85 +576,34 @@ impl ProxyHttp for CodexProxy {
             }
 
             // For streaming conversion responses, convert each SSE chunk
-            if ctx.is_streaming && ctx.is_conversion_request {
+            if ctx.should_convert_stream_response {
                 // Suppress raw Chat API body immediately - it will be replaced
                 // with converted Responses API events below (or empty if no events)
                 *body = Some(Bytes::new());
 
-                let text = std::str::from_utf8(b).unwrap_or("");
-                debug!("[STREAM_RAW] is_streaming=true, body={}", String::from_utf8_lossy(b).chars().take(200).collect::<String>());
+                // Use accumulated body for SSE parsing (events may span multiple frames)
+                // Only parse from the last parsed offset to avoid re-processing events
+                let text = std::str::from_utf8(&ctx.response_body).unwrap_or("");
+                let unparsed_text = &text[ctx.stream_body_parsed_offset..];
+                debug!("[STREAM_RAW] is_streaming=true, body={}", String::from_utf8_lossy(&ctx.response_body).chars().take(200).collect::<String>());
                 let mut converted_chunks: Vec<String> = Vec::new();
 
-                // SSE format: each event is "data: <json>\n\n"
-                // The challenge is that JSON content can contain literal \n characters
-                // which we should NOT treat as delimiters.
-                // Strategy: After finding "data: ", find the closing brace of the JSON,
-                // then find the actual SSE delimiter \n\n after it.
+                // Use SSE utility module to parse only new events
+                let (events, parse_end_pos) = crate::util::parse_sse(unparsed_text);
+                let new_events_count = events.len();
+                debug!("[STREAM_PARSE] Found {} new SSE events (offset={}, parse_end={})", new_events_count, ctx.stream_body_parsed_offset, parse_end_pos);
 
-                let mut search_pos = 0;
-                debug!("[STREAM_PARSE] Starting parse of text len={}", text.len());
-
-                while let Some(data_start) = text[search_pos..].find("data: ") {
-                    let after_data_prefix = search_pos + data_start + 6; // after "data: "
-
-                    if after_data_prefix >= text.len() {
-                        break;
-                    }
-
-                    let rest = &text[after_data_prefix..];
-
-                    // Handle "[DONE]"
-                    if rest.starts_with("[DONE]") {
-                        converted_chunks.push("data: [DONE]\n\n".to_string());
-                        search_pos = after_data_prefix + 6; // "[DONE]" is 6 chars
-                        if search_pos + 1 < text.len() && text[search_pos..].starts_with("\n\n") {
-                            search_pos += 2;
-                        }
+                for event in events {
+                    // Skip [DONE] marker events - they don't contain JSON
+                    if event.data == "[DONE]" {
                         continue;
                     }
 
-                    // Find the JSON object end by brace matching
-                    let mut brace_depth = 0;
-                    let mut in_string = false;
-                    let mut escaped = false;
-                    let mut json_end = 0;
-
-                    for (i, c) in rest.char_indices() {
-                        if escaped {
-                            escaped = false;
-                            continue;
-                        }
-                        match c {
-                            '\\' if in_string => { escaped = true; }
-                            '"' => { in_string = !in_string; }
-                            '{' | '[' if !in_string => { brace_depth += 1; }
-                            '}' | ']' if !in_string => {
-                                brace_depth -= 1;
-                                if brace_depth == 0 {
-                                    json_end = i + c.len_utf8();
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    if json_end == 0 {
-                        debug!("[STREAM_PARSE] Could not find JSON end for event");
-                        break;
-                    }
-
-                    // Now find \n\n SSE delimiter after the JSON
-                    let after_json = &rest[json_end..];
-                    let sse_delimiter_pos = after_json.find("\n\n");
-
-                    if let Some(delimiter_offset) = sse_delimiter_pos {
-                        let json_content = &rest[..json_end];
-                        debug!("[STREAM_PARSE] Found valid SSE event, json len={}", json_content.len());
-
-                        match serde_json::from_str::<crate::types::chat_api::ChatStreamChunk>(json_content) {
-                            Ok(chunk) => {
-                                let mut chunk = chunk;
+                    // Parse as ChatStreamChunk
+                    match serde_json::from_str::<crate::types::chat_api::ChatStreamChunk>(&event.data) {
+                        Ok(chunk) => {
+                            ctx.stream_chunks_parsed += 1;
+                            let mut chunk = chunk;
 
                             // Apply provider transformation
                             if let Some(b_name) = ctx.provider_name.as_ref() {
@@ -600,33 +633,40 @@ impl ProxyHttp for CodexProxy {
                                     }
                                 }
                             }
-                            }
-                            Err(e) => {
-                                debug!("[STREAM_PARSE] Failed to parse JSON: {}", e);
-                            }
                         }
-
-                        // Move past this SSE event to find the next
-                        search_pos = after_data_prefix + json_end + delimiter_offset + 2;
-                    } else {
-                        // No delimiter found, skip this event
-                        debug!("[STREAM_PARSE] No SSE delimiter found, skipping event");
-                        search_pos = after_data_prefix + json_end;
+                        Err(e) => {
+                            debug!("[STREAM_PARSE] Failed to parse JSON: {}", e);
+                        }
                     }
+                }
+
+                // Update the parse offset to avoid re-parsing on next frame
+                // Use parse_end_pos (relative to unparsed_text) to calculate absolute position
+                if new_events_count > 0 {
+                    ctx.stream_body_parsed_offset += parse_end_pos;
                 }
 
                 // For streaming responses, append response.completed event at end_of_body
                 if end_of_body {
                     if let Some(ref mut state) = ctx.stream_state {
                         if !state.is_completed {
+                            if ctx.stream_chunks_parsed == 0 {
+                                warn!(
+                                    "[STREAM_COMPLETE_SKIP] skip response.completed because no valid upstream chunks were parsed (status={:?}, content_type={:?})",
+                                    ctx.upstream_status,
+                                    ctx.upstream_content_type
+                                );
+                                state.is_completed = true;
+                            } else {
                             let response_obj = state.build_response_object();
                             debug!(
-                                "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}",
+                                "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}, parsed_chunks={}",
                                 response_obj.id,
                                 response_obj.output.len(),
                                 state.is_reasoning_added,
                                 state.is_output_item_added,
-                                state.completed_tool_calls.len()
+                                state.completed_tool_calls.len(),
+                                ctx.stream_chunks_parsed
                             );
                             if self.log_body {
                                 if let Ok(json) = serde_json::to_string(&response_obj) {
@@ -636,10 +676,10 @@ impl ProxyHttp for CodexProxy {
                             let completed_event = crate::convert::ResponseStreamEvent::Completed {
                                 response: response_obj,
                             };
-                            let mut sse_data = crate::convert::event_to_sse(&completed_event);
-                            sse_data.push_str("data: [DONE]\n\n");
+                            let sse_data = crate::convert::event_to_sse(&completed_event);
                             converted_chunks.push(sse_data);
                             state.is_completed = true;
+                            }
                         }
                     }
                 }
@@ -659,7 +699,10 @@ impl ProxyHttp for CodexProxy {
             if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty() {
                 if let Ok(text) = std::str::from_utf8(&ctx.response_body) {
                     if let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
-                        match crate::convert::chat_to_response(chat_resp) {
+                        match crate::convert::chat_to_response_with_context(
+                            chat_resp,
+                            ctx.response_request_context.as_ref(),
+                        ) {
                             Ok(response_obj) => {
                                 if let Ok(converted) = serde_json::to_vec(&response_obj) {
                                     if self.log_body {

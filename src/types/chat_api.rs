@@ -47,6 +47,8 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Vec<ChatMessageAnnotation>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -94,7 +96,28 @@ pub struct ContentBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_url: Option<String>,
+    pub image_url: Option<ImageUrlField>,
+}
+
+/// Chat image_url supports either string or object form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ImageUrlField {
+    String(String),
+    Object(ImageUrlObject),
+}
+
+impl From<String> for ImageUrlField {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+/// Object-form image URL field used by OpenAI-compatible APIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ImageUrlObject {
+    pub url: String,
 }
 
 /// A tool definition for Chat API.
@@ -193,6 +216,43 @@ pub struct ChatUsage {
     pub completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+/// Prompt token details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PromptTokensDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u32>,
+}
+
+/// Completion token details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CompletionTokensDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+}
+
+/// Optional chat annotation attached to assistant message content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatMessageAnnotation {
+    UrlCitation {
+        start_index: usize,
+        end_index: usize,
+        url: String,
+        title: String,
+    },
+    FileCitation {
+        index: usize,
+        file_id: String,
+        filename: String,
+    },
 }
 
 /// Chat API streaming chunk.

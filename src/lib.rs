@@ -56,6 +56,7 @@ pub mod stats;
 pub mod streaming;
 pub mod telemetry;
 pub mod types;
+pub mod util;
 
 // Re-export main types
 pub use error::{ConversionError, ProxyError};

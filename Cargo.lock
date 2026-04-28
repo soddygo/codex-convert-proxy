@@ -461,6 +461,7 @@ dependencies = [
  "chrono",
  "clap",
  "http",
+ "http-body-util",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

@@ -82,6 +82,7 @@ mod tests {
                     image_url: None,
                 }]),
                 name: None,
+                annotations: None,
                 tool_calls: None,
                 tool_call_id: None,
             }],

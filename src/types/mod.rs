@@ -7,6 +7,7 @@ pub mod response_api;
 pub use chat_api::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatStreamChunk, ChatTool, ChatToolChoice,
     Content, ContentBlock, FunctionCall, FunctionChoice, FunctionDefinition, MessageRole,
+    ChatMessageAnnotation, CompletionTokensDetails, ImageUrlField, ImageUrlObject, PromptTokensDetails,
     StreamOptions, ToolCall, ChatDelta, ChatStreamChoice, ChatToolChoiceMode, ChatUsage,
     FunctionCallDelta, ToolCallDelta,
 };

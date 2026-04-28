@@ -1,8 +1,12 @@
 //! Streaming conversion: Chat SSE chunks → Responses API event sequence.
 
+use std::collections::HashMap;
+
 use crate::error::ConversionError;
 use crate::types::chat_api::{ChatStreamChunk, Content};
-use crate::types::response_api::ResponseObject;
+use crate::types::response_api::{
+    ResponseObject, ResponseReasoning, ResponseRequest, ResponseTextConfig, Tool, ToolChoice,
+};
 
 /// SSE event types for Responses API streaming.
 #[derive(Debug, Clone)]
@@ -13,10 +17,15 @@ pub enum ResponseStreamEvent {
         model: String,
         status: String,
         created_at: i64,
+        request_context: Option<ResponseRequestContext>,
     },
     /// Response is in progress.
     InProgress {
         id: String,
+        model: String,
+        status: String,
+        created_at: i64,
+        request_context: Option<ResponseRequestContext>,
     },
     /// Output item was added.
     OutputItemAdded {
@@ -44,12 +53,14 @@ pub enum ResponseStreamEvent {
         item_id: String,
         output_index: u32,
         content_index: u32,
+        text: String,
     },
     /// Content part done.
     ContentPartDone {
         item_id: String,
         output_index: u32,
         content_index: u32,
+        text: String,
     },
     /// Output item done.
     OutputItemDone {
@@ -60,6 +71,7 @@ pub enum ResponseStreamEvent {
         call_id: Option<String>,
         name: Option<String>,
         arguments: Option<String>,
+        text: Option<String>,
     },
     /// Reasoning output item added.
     ReasoningAdded {
@@ -113,6 +125,8 @@ pub struct StreamState {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
+    pub cached_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
     /// Buffer for incomplete think/thought tags during streaming
     pub thinking_buffer: String,
     /// Whether we're currently inside a thinking tag
@@ -123,12 +137,16 @@ pub struct StreamState {
     pub text_output_index: Option<u32>,
     /// Stored output_index for reasoning items
     pub reasoning_output_index: Option<u32>,
+    /// Original Responses request fields for protocol-consistent events.
+    pub request_context: Option<ResponseRequestContext>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ToolCallState {
     pub upstream_id: Option<String>,  // Original ID from upstream provider (None if malformed)
     pub id: String,           // Internal ID we generate
+    pub call_id: String,      // Stable call_id exposed in Responses API
+    pub item_type: String,    // Response output item type: function_call/web_search_call/file_search_call
     pub name: String,
     pub arguments: String,
     pub output_index: u32,     // Each tool call stores its own output_index
@@ -136,9 +154,80 @@ pub struct ToolCallState {
     pub last_args_len: usize,  // Track for delta calculation
 }
 
+#[derive(Debug, Clone)]
+pub struct ResponseRequestContext {
+    pub instructions: Option<String>,
+    pub max_output_tokens: Option<u32>,
+    pub parallel_tool_calls: Option<bool>,
+    pub previous_response_id: Option<String>,
+    pub reasoning: Option<ResponseReasoning>,
+    pub store: Option<bool>,
+    pub temperature: Option<f32>,
+    pub text: Option<ResponseTextConfig>,
+    pub tool_choice: ToolChoice,
+    pub tools: Vec<Tool>,
+    pub top_p: Option<f32>,
+    pub truncation: Option<String>,
+    pub user: Option<String>,
+    pub metadata: Option<HashMap<String, serde_json::Value>>,
+}
+
+impl From<&ResponseRequest> for ResponseRequestContext {
+    fn from(req: &ResponseRequest) -> Self {
+        let mut metadata = req.metadata.clone().unwrap_or_default();
+        let tool_map: serde_json::Map<String, serde_json::Value> = req
+            .tools
+            .iter()
+            .filter_map(|t| {
+                t.name.as_ref().map(|name| {
+                    (
+                        name.clone(),
+                        serde_json::json!({
+                            "type": t.tool_type,
+                            "strict": t.strict,
+                            "extra": t.extra,
+                        }),
+                    )
+                })
+            })
+            .collect();
+        if !tool_map.is_empty() {
+            metadata.insert(
+                "x_proxy_tool_map".to_string(),
+                serde_json::Value::Object(tool_map),
+            );
+        }
+
+        Self {
+            instructions: req.instructions.clone(),
+            max_output_tokens: req.max_output_tokens.or(req.max_tokens),
+            parallel_tool_calls: req.parallel_tool_calls,
+            previous_response_id: req.previous_response_id.clone(),
+            reasoning: req.reasoning.clone(),
+            store: req.store,
+            temperature: req.temperature,
+            text: req.text.clone(),
+            tool_choice: req.tool_choice.clone(),
+            tools: req.tools.clone(),
+            top_p: req.top_p,
+            truncation: req.truncation.clone(),
+            user: req.user.clone(),
+            metadata: if metadata.is_empty() {
+                None
+            } else {
+                Some(metadata)
+            },
+        }
+    }
+}
+
 impl StreamState {
     /// Create a new stream state.
-    pub fn new(response_id: String, model: String) -> Self {
+    pub fn new(
+        response_id: String,
+        model: String,
+        request_context: Option<ResponseRequestContext>,
+    ) -> Self {
         Self {
             response_id: response_id.clone(),
             output_id: format!("msg_{}", response_id),
@@ -157,11 +246,14 @@ impl StreamState {
             input_tokens: None,
             output_tokens: None,
             total_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
             thinking_buffer: String::new(),
             is_thinking: false,
             next_output_index: 0,
             text_output_index: None,
             reasoning_output_index: None,
+            request_context,
         }
     }
 
@@ -171,14 +263,24 @@ impl StreamState {
             self.input_tokens = usage.prompt_tokens.map(|v| v as i64);
             self.output_tokens = usage.completion_tokens.map(|v| v as i64);
             self.total_tokens = usage.total_tokens.map(|v| v as i64);
+            self.cached_tokens = usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+                .map(|v| v as i64);
+            self.reasoning_tokens = usage
+                .completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+                .map(|v| v as i64);
         }
     }
 
     /// Build the final ResponseObject with all accumulated outputs.
     pub fn build_response_object(&self) -> crate::types::response_api::ResponseObject {
         use crate::types::response_api::{
-            ResponseContentPart, ResponseObject, ResponseOutputItem,
-            OutputItemType, Usage,
+            InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseContentPart, ResponseObject,
+            ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, Usage,
         };
         use chrono::Utc;
 
@@ -192,10 +294,14 @@ impl StreamState {
                 status: Some("completed".to_string()),
                 content: Some(vec![ResponseContentPart::OutputText {
                     text: self.reasoning_text.clone(),
+                    annotations: vec![],
                 }]),
+                role: None,
                 name: None,
                 arguments: None,
                 call_id: None,
+                queries: None,
+                results: None,
             });
         }
 
@@ -207,30 +313,49 @@ impl StreamState {
                 status: Some("completed".to_string()),
                 content: Some(vec![ResponseContentPart::OutputText {
                     text: self.full_text.clone(),
+                    annotations: vec![],
                 }]),
-                name: Some("assistant".to_string()),
+                role: Some("assistant".to_string()),
+                name: None,
                 arguments: None,
                 call_id: None,
+                queries: None,
+                results: None,
             });
         }
 
         // Add function call outputs
         for tc in &self.completed_tool_calls {
+            let item_type = map_tool_name_to_output_type(&tc.name, self.request_context.as_ref());
+            let (queries, results) = if item_type != OutputItemType::FunctionCall {
+                (extract_queries_from_arguments(&tc.arguments), Some(serde_json::Value::Null))
+            } else {
+                (None, None)
+            };
             output.push(ResponseOutputItem {
                 id: tc.id.clone(),
-                item_type: OutputItemType::FunctionCall,
+                item_type,
                 status: Some("completed".to_string()),
                 content: None,
+                role: None,
                 name: Some(tc.name.clone()),
                 arguments: Some(tc.arguments.clone()),
-                call_id: Some(tc.id.clone()),
+                call_id: Some(tc.call_id.clone()),
+                queries,
+                results,
             });
         }
 
         let usage = if self.input_tokens.is_some() || self.output_tokens.is_some() || self.total_tokens.is_some() {
             Some(Usage {
                 input_tokens: self.input_tokens,
+                input_tokens_details: Some(InputTokensDetails {
+                    cached_tokens: self.cached_tokens,
+                }),
                 output_tokens: self.output_tokens,
+                output_tokens_details: Some(OutputTokensDetails {
+                    reasoning_tokens: self.reasoning_tokens,
+                }),
                 total_tokens: self.total_tokens,
             })
         } else {
@@ -244,8 +369,74 @@ impl StreamState {
             model: self.model.clone(),
             created_at: Utc::now().timestamp(),
             completed_at: Some(Utc::now().timestamp()),
+            error: None,
+            incomplete_details: None,
+            instructions: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.instructions.clone()),
+            max_output_tokens: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.max_output_tokens),
+            max_tool_calls: None,
             input: None,  // Input not available in streaming context
             output,
+            parallel_tool_calls: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.parallel_tool_calls),
+            previous_response_id: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.previous_response_id.clone()),
+            reasoning: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.reasoning.clone())
+                .or_else(|| {
+                    Some(crate::types::response_api::ResponseReasoning {
+                        effort: None,
+                        summary: None,
+                    })
+                }),
+            store: self.request_context.as_ref().and_then(|ctx| ctx.store),
+            temperature: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.temperature),
+            text: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.text.clone())
+                .or_else(|| {
+                    Some(ResponseTextConfig {
+                        format: Some(ResponseTextFormat {
+                            format_type: "text".to_string(),
+                        }),
+                    })
+                }),
+            tool_choice: self
+                .request_context
+                .as_ref()
+                .map(|ctx| ctx.tool_choice.clone()),
+            tools: self
+                .request_context
+                .as_ref()
+                .map(|ctx| ctx.tools.clone()),
+            top_p: self.request_context.as_ref().and_then(|ctx| ctx.top_p),
+            truncation: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.truncation.clone()),
+            user: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.user.clone()),
+            metadata: self
+                .request_context
+                .as_ref()
+                .and_then(|ctx| ctx.metadata.clone()),
             usage,
         }
     }
@@ -257,7 +448,8 @@ pub fn chat_chunk_to_response_events(
     state: &mut StreamState,
 ) -> Result<Vec<ResponseStreamEvent>, ConversionError> {
     let mut events = Vec::new();
-    let id = chunk.id.clone().unwrap_or_else(|| state.response_id.clone());
+    // Keep a stable response id across the whole stream lifecycle.
+    let id = state.response_id.clone();
     let model = chunk.model.as_deref().unwrap_or("unknown");
 
     // On first chunk, emit created and in_progress
@@ -268,9 +460,14 @@ pub fn chat_chunk_to_response_events(
             model: model.to_string(),
             status: "in_progress".to_string(),
             created_at,
+            request_context: state.request_context.clone(),
         });
         events.push(ResponseStreamEvent::InProgress {
             id: id.to_string(),
+            model: model.to_string(),
+            status: "in_progress".to_string(),
+            created_at,
+            request_context: state.request_context.clone(),
         });
         state.is_first_chunk = false;
     }
@@ -406,22 +603,25 @@ pub fn chat_chunk_to_response_events(
                             // New tool call (has id) - assign sequential output_index
                             let func_output_index = state.next_output_index;
                             state.next_output_index += 1;
-                            let func_id = format!("func_{}_{}", func_output_index, id);
+                            let func_id = format!("func_{}_{}", func_output_index, state.response_id);
+                            let initial_name = tc.function.name.clone().unwrap_or_default();
+                            let item_type = map_tool_name_to_stream_item_type(&initial_name, state.request_context.as_ref());
                             tracing::debug!("[TOOL_CALL] Creating new tool call: func_id={}, output_index={}", func_id, func_output_index);
                             events.push(ResponseStreamEvent::OutputItemAdded {
                                 output_index: func_output_index,
                                 item_id: func_id.clone(),
-                                item_type: "function_call".to_string(),
+                                item_type: item_type.clone(),
                                 role: None,
-                                call_id: Some(func_id.clone()),
+                                call_id: Some(tc_id.clone()),
                             });
                             state.is_function_call_item_added = true;
 
-                            let initial_name = tc.function.name.clone().unwrap_or_default();
                             let initial_args = tc.function.arguments.clone().unwrap_or_default();
                             let tc_state = ToolCallState {
-                                upstream_id: Some(tc_id),
+                                upstream_id: Some(tc_id.clone()),
                                 id: func_id.clone(),
+                                call_id: tc_id,
+                                item_type,
                                 name: initial_name,
                                 arguments: initial_args.clone(),
                                 output_index: func_output_index,
@@ -493,18 +693,19 @@ pub fn chat_chunk_to_response_events(
                         events.push(ResponseStreamEvent::FunctionCallArgumentsDone {
                             output_index: tc_state.output_index,
                             item_id: tc_state.id.clone(),
-                            call_id: tc_state.id.clone(),
+                            call_id: tc_state.call_id.clone(),
                             name: tc_state.name.clone(),
                             arguments: tc_state.arguments.clone(),
                         });
                         events.push(ResponseStreamEvent::OutputItemDone {
                             output_index: tc_state.output_index,
                             item_id: tc_state.id.clone(),
-                            item_type: "function_call".to_string(),
+                            item_type: tc_state.item_type.clone(),
                             role: None,
-                            call_id: Some(tc_state.id.clone()),
+                            call_id: Some(tc_state.call_id.clone()),
                             name: Some(tc_state.name.clone()),
                             arguments: Some(tc_state.arguments.clone()),
+                            text: None,
                         });
                         state.completed_tool_calls.push(tc_state);
                     }
@@ -515,11 +716,13 @@ pub fn chat_chunk_to_response_events(
                             item_id: state.output_id.clone(),
                             output_index: text_idx,
                             content_index: 0,
+                            text: state.full_text.clone(),
                         });
                         events.push(ResponseStreamEvent::ContentPartDone {
                             item_id: state.output_id.clone(),
                             output_index: text_idx,
                             content_index: 0,
+                            text: state.full_text.clone(),
                         });
                         events.push(ResponseStreamEvent::OutputItemDone {
                             output_index: text_idx,
@@ -529,6 +732,7 @@ pub fn chat_chunk_to_response_events(
                             call_id: None,
                             name: None,
                             arguments: None,
+                            text: Some(state.full_text.clone()),
                         });
                     }
                     if state.is_reasoning_added {
@@ -541,6 +745,7 @@ pub fn chat_chunk_to_response_events(
                             call_id: None,
                             name: None,
                             arguments: None,
+                            text: Some(state.reasoning_text.clone()),
                         });
                     }
                 }
@@ -565,18 +770,19 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
         events.push(ResponseStreamEvent::FunctionCallArgumentsDone {
             output_index: tc_state.output_index,
             item_id: tc_state.id.clone(),
-            call_id: tc_state.id.clone(),
+            call_id: tc_state.call_id.clone(),
             name: tc_state.name.clone(),
             arguments: tc_state.arguments.clone(),
         });
         events.push(ResponseStreamEvent::OutputItemDone {
             output_index: tc_state.output_index,
             item_id: tc_state.id.clone(),
-            item_type: "function_call".to_string(),
+            item_type: tc_state.item_type.clone(),
             role: None,
-            call_id: Some(tc_state.id.clone()),
+            call_id: Some(tc_state.call_id.clone()),
             name: Some(tc_state.name.clone()),
             arguments: Some(tc_state.arguments.clone()),
+            text: None,
         });
         state.completed_tool_calls.push(tc_state);
     }
@@ -587,11 +793,13 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             item_id: state.output_id.clone(),
             output_index: text_idx,
             content_index: 0,
+            text: state.full_text.clone(),
         });
         events.push(ResponseStreamEvent::ContentPartDone {
             item_id: state.output_id.clone(),
             output_index: text_idx,
             content_index: 0,
+            text: state.full_text.clone(),
         });
         events.push(ResponseStreamEvent::OutputItemDone {
             output_index: text_idx,
@@ -601,6 +809,7 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             call_id: None,
             name: None,
             arguments: None,
+            text: Some(state.full_text.clone()),
         });
     }
 
@@ -614,6 +823,7 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             call_id: None,
             name: None,
             arguments: None,
+            text: Some(state.reasoning_text.clone()),
         });
     }
 
@@ -626,155 +836,378 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
 /// Generate SSE string from Response stream event.
 pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
     match event {
-        ResponseStreamEvent::Created { id, model, status, created_at } => {
-            format!(
-                "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"{}\",\"object\":\"response\",\"created_at\":{},\"model\":\"{}\",\"status\":\"{}\"}}}}\n\n",
-                escape_sse(id),
-                created_at,
-                escape_sse(model),
-                status
+        ResponseStreamEvent::Created {
+            id,
+            model,
+            status,
+            created_at,
+            request_context,
+        } => {
+            sse_event(
+                "response.created",
+                serde_json::json!({
+                    "type": "response.created",
+                    "response": response_stub_json(id, model, status, *created_at, request_context.as_ref()),
+                }),
             )
         }
-        ResponseStreamEvent::InProgress { id } => {
-            format!(
-                "event: response.in_progress\ndata: {{\"type\":\"response.in_progress\",\"response\":{{\"id\":\"{}\"}}}}\n\n",
-                escape_sse(id)
+        ResponseStreamEvent::InProgress {
+            id,
+            model,
+            status,
+            created_at,
+            request_context,
+        } => {
+            sse_event(
+                "response.in_progress",
+                serde_json::json!({
+                    "type": "response.in_progress",
+                    "response": response_stub_json(id, model, status, *created_at, request_context.as_ref()),
+                }),
             )
         }
         ResponseStreamEvent::OutputItemAdded { output_index, item_id, item_type, role, call_id } => {
-            let role_str = match role {
-                Some(r) => format!(",\"role\":\"{}\"", escape_sse(r)),
-                None => String::new(),
-            };
-            let call_id_str = match call_id {
-                Some(cid) => format!(",\"call_id\":\"{}\"", escape_sse(cid)),
-                None => String::new(),
-            };
-            format!(
-                "event: response.output_item.added\ndata: {{\"type\":\"response.output_item.added\",\"output_index\":{},\"item\":{{\"id\":\"{}\",\"type\":\"{}\"{}{}}}}}\n\n",
-                output_index,
-                escape_sse(item_id),
-                item_type,
-                role_str,
-                call_id_str
+            let mut item = serde_json::Map::new();
+            item.insert("id".to_string(), serde_json::json!(item_id));
+            item.insert("type".to_string(), serde_json::json!(item_type));
+            item.insert("status".to_string(), serde_json::json!("in_progress"));
+            if let Some(r) = role {
+                item.insert("role".to_string(), serde_json::json!(r));
+            }
+            if let Some(cid) = call_id {
+                item.insert("call_id".to_string(), serde_json::json!(cid));
+            }
+            if item_type == "message" || item_type == "reasoning" {
+                item.insert("content".to_string(), serde_json::json!([]));
+            }
+            sse_event(
+                "response.output_item.added",
+                serde_json::json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": serde_json::Value::Object(item),
+                }),
             )
         }
         ResponseStreamEvent::ContentPartAdded { item_id, output_index, content_index } => {
-            format!(
-                "event: response.content_part.added\ndata: {{\"type\":\"response.content_part.added\",\"output_index\":{},\"item_id\":\"{}\",\"content_index\":{}}}\n\n",
-                output_index,
-                escape_sse(item_id),
-                content_index
+            sse_event(
+                "response.content_part.added",
+                serde_json::json!({
+                    "type": "response.content_part.added",
+                    "output_index": output_index,
+                    "item_id": item_id,
+                    "content_index": content_index,
+                    "part": {
+                        "type": "output_text",
+                        "text": "",
+                        "annotations": [],
+                    }
+                }),
             )
         }
         ResponseStreamEvent::OutputTextDelta { item_id, output_index, content_index, delta } => {
-            format!(
-                "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{}\",\"output_index\":{},\"content_index\":{},\"delta\":\"{}\"}}\n\n",
-                escape_sse(item_id),
-                output_index,
-                content_index,
-                escape_json_string(delta)
+            sse_event(
+                "response.output_text.delta",
+                serde_json::json!({
+                    "type": "response.output_text.delta",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "content_index": content_index,
+                    "delta": delta,
+                }),
             )
         }
-        ResponseStreamEvent::OutputTextDone { item_id, output_index, content_index } => {
-            format!(
-                "event: response.output_text.done\ndata: {{\"type\":\"response.output_text.done\",\"item_id\":\"{}\",\"output_index\":{},\"content_index\":{}}}\n\n",
-                escape_sse(item_id),
-                output_index,
-                content_index
+        ResponseStreamEvent::OutputTextDone {
+            item_id,
+            output_index,
+            content_index,
+            text,
+        } => {
+            sse_event(
+                "response.output_text.done",
+                serde_json::json!({
+                    "type": "response.output_text.done",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "content_index": content_index,
+                    "text": text,
+                }),
             )
         }
-        ResponseStreamEvent::ContentPartDone { item_id, output_index, content_index } => {
-            format!(
-                "event: response.content_part.done\ndata: {{\"type\":\"response.content_part.done\",\"item_id\":\"{}\",\"output_index\":{},\"content_index\":{}}}\n\n",
-                escape_sse(item_id),
-                output_index,
-                content_index
+        ResponseStreamEvent::ContentPartDone {
+            item_id,
+            output_index,
+            content_index,
+            text,
+        } => {
+            sse_event(
+                "response.content_part.done",
+                serde_json::json!({
+                    "type": "response.content_part.done",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "content_index": content_index,
+                    "part": {
+                        "type": "output_text",
+                        "text": text,
+                        "annotations": [],
+                    }
+                }),
             )
         }
-        ResponseStreamEvent::OutputItemDone { output_index, item_id, item_type, role, call_id, name, arguments } => {
-            let role_str = match role {
-                Some(r) => format!(",\"role\":\"{}\"", escape_sse(r)),
-                None => String::new(),
-            };
-            let call_id_str = match call_id {
-                Some(cid) => format!(",\"call_id\":\"{}\"", escape_sse(cid)),
-                None => String::new(),
-            };
-            let name_str = match name {
-                Some(n) => format!(",\"name\":\"{}\"", escape_json_string(n)),
-                None => String::new(),
-            };
-            let args_str = match arguments {
-                Some(a) => format!(",\"arguments\":\"{}\"", escape_json_string(a)),
-                None => String::new(),
-            };
-            let status_str = ",\"status\":\"completed\"";
-            format!(
-                "event: response.output_item.done\ndata: {{\"type\":\"response.output_item.done\",\"output_index\":{},\"item\":{{\"id\":\"{}\",\"type\":\"{}\"{}{}{}{}{}}}}}\n\n",
-                output_index,
-                escape_sse(item_id),
-                item_type,
-                role_str,
-                call_id_str,
-                name_str,
-                args_str,
-                status_str
+        ResponseStreamEvent::OutputItemDone {
+            output_index,
+            item_id,
+            item_type,
+            role,
+            call_id,
+            name,
+            arguments,
+            text,
+        } => {
+            let mut item = serde_json::Map::new();
+            item.insert("id".to_string(), serde_json::json!(item_id));
+            item.insert("type".to_string(), serde_json::json!(item_type));
+            item.insert("status".to_string(), serde_json::json!("completed"));
+            if let Some(r) = role {
+                item.insert("role".to_string(), serde_json::json!(r));
+            }
+            if let Some(cid) = call_id {
+                item.insert("call_id".to_string(), serde_json::json!(cid));
+            }
+            if let Some(n) = name {
+                item.insert("name".to_string(), serde_json::json!(n));
+            }
+            if let Some(args) = arguments {
+                item.insert("arguments".to_string(), serde_json::json!(args));
+            }
+            if let Some(body_text) = text {
+                item.insert(
+                    "content".to_string(),
+                    serde_json::json!([{
+                        "type": "output_text",
+                        "text": body_text,
+                        "annotations": [],
+                    }]),
+                );
+            }
+            sse_event(
+                "response.output_item.done",
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": serde_json::Value::Object(item),
+                }),
             )
         }
         ResponseStreamEvent::ReasoningAdded { output_index, item_id } => {
-            format!(
-                "event: response.output_item.added\ndata: {{\"type\":\"response.output_item.added\",\"output_index\":{},\"item\":{{\"id\":\"{}\",\"type\":\"reasoning\"}}}}\n\n",
-                output_index,
-                escape_sse(item_id)
+            sse_event(
+                "response.output_item.added",
+                serde_json::json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {
+                        "id": item_id,
+                        "type": "reasoning",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                }),
             )
         }
         ResponseStreamEvent::ReasoningDelta { item_id, output_index, content_index, delta } => {
-            format!(
-                "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"item_id\":\"{}\",\"output_index\":{},\"content_index\":{},\"delta\":\"{}\"}}\n\n",
-                escape_sse(item_id),
-                output_index,
-                content_index,
-                escape_json_string(delta)
+            sse_event(
+                "response.output_text.delta",
+                serde_json::json!({
+                    "type": "response.output_text.delta",
+                    "item_id": item_id,
+                    "output_index": output_index,
+                    "content_index": content_index,
+                    "delta": delta,
+                }),
             )
         }
         ResponseStreamEvent::FunctionCallArgumentsDelta { output_index, item_id, delta } => {
-            format!(
-                "event: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"output_index\":{},\"item_id\":\"{}\",\"delta\":\"{}\"}}\n\n",
-                output_index,
-                escape_sse(item_id),
-                escape_json_string(delta)
+            sse_event(
+                "response.function_call_arguments.delta",
+                serde_json::json!({
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": output_index,
+                    "item_id": item_id,
+                    "delta": delta,
+                }),
             )
         }
         ResponseStreamEvent::FunctionCallArgumentsDone { output_index, item_id, call_id, name, arguments } => {
-            format!(
-                "event: response.function_call_arguments.done\ndata: {{\"type\":\"response.function_call_arguments.done\",\"output_index\":{},\"item_id\":\"{}\",\"call_id\":\"{}\",\"name\":\"{}\",\"arguments\":\"{}\"}}\n\n",
-                output_index,
-                escape_sse(item_id),
-                escape_sse(call_id),
-                escape_json_string(name),
-                escape_json_string(arguments)
+            sse_event(
+                "response.function_call_arguments.done",
+                serde_json::json!({
+                    "type": "response.function_call_arguments.done",
+                    "output_index": output_index,
+                    "item_id": item_id,
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                }),
             )
         }
         ResponseStreamEvent::Completed { response } => {
-            format!(
-                "event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{}}}\n\n",
-                serde_json::to_string(response).unwrap_or_default()
+            sse_event(
+                "response.completed",
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": response,
+                }),
             )
         }
     }
 }
 
-fn escape_sse(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r")
+fn sse_event(event_name: &str, payload: serde_json::Value) -> String {
+    let data = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    format!("event: {event_name}\ndata: {data}\n\n")
 }
 
-fn escape_json_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+fn response_stub_json(
+    id: &str,
+    model: &str,
+    status: &str,
+    created_at: i64,
+    request_context: Option<&ResponseRequestContext>,
+) -> serde_json::Value {
+    let (
+        instructions,
+        max_output_tokens,
+        parallel_tool_calls,
+        previous_response_id,
+        reasoning,
+        store,
+        temperature,
+        text,
+        tool_choice,
+        tools,
+        top_p,
+        truncation,
+        user,
+        metadata,
+    ) = if let Some(ctx) = request_context {
+        (
+            serde_json::to_value(&ctx.instructions).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(ctx.max_output_tokens).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(ctx.parallel_tool_calls).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.previous_response_id).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.reasoning).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(ctx.store).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(ctx.temperature).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.text).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.tool_choice).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.tools).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(ctx.top_p).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.truncation).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.user).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&ctx.metadata).unwrap_or(serde_json::Value::Null),
+        )
+    } else {
+        (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        )
+    };
+
+    serde_json::json!({
+        "id": id,
+        "object": "response",
+        "created_at": created_at,
+        "status": status,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": instructions,
+        "max_output_tokens": max_output_tokens,
+        "model": model,
+        "output": [],
+        "parallel_tool_calls": parallel_tool_calls,
+        "previous_response_id": previous_response_id,
+        "reasoning": reasoning,
+        "store": store,
+        "temperature": temperature,
+        "text": if text.is_null() {
+            serde_json::json!({"format":{"type":"text"}})
+        } else {
+            text
+        },
+        "tool_choice": tool_choice,
+        "tools": tools,
+        "top_p": top_p,
+        "truncation": truncation,
+        "usage": null,
+        "user": user,
+        "metadata": metadata,
+    })
+}
+
+fn map_tool_name_to_output_type(
+    tool_name: &str,
+    request_context: Option<&ResponseRequestContext>,
+) -> crate::types::response_api::OutputItemType {
+    use crate::types::response_api::{OutputItemType, ToolType};
+    if let Some(ctx) = request_context {
+        for t in &ctx.tools {
+            if t.name.as_deref() == Some(tool_name) {
+                return match t.tool_type {
+                    ToolType::WebSearchPreview => OutputItemType::WebSearchCall,
+                    ToolType::FileSearch => OutputItemType::FileSearchCall,
+                    _ => OutputItemType::FunctionCall,
+                };
+            }
+        }
+    }
+    match tool_name {
+        "web_search_preview" | "web_search" => OutputItemType::WebSearchCall,
+        "file_search" => OutputItemType::FileSearchCall,
+        _ => OutputItemType::FunctionCall,
+    }
+}
+
+fn map_tool_name_to_stream_item_type(
+    tool_name: &str,
+    request_context: Option<&ResponseRequestContext>,
+) -> String {
+    use crate::types::response_api::OutputItemType;
+    match map_tool_name_to_output_type(tool_name, request_context) {
+        OutputItemType::WebSearchCall => "web_search_call".to_string(),
+        OutputItemType::FileSearchCall => "file_search_call".to_string(),
+        _ => "function_call".to_string(),
+    }
+}
+
+fn extract_queries_from_arguments(arguments: &str) -> Option<Vec<String>> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
+        if let Some(query) = value.get("query").and_then(|v| v.as_str()) {
+            return Some(vec![query.to_string()]);
+        }
+        if let Some(queries) = value.get("queries").and_then(|v| v.as_array()) {
+            let qs: Vec<String> = queries
+                .iter()
+                .filter_map(|q| q.as_str().map(|s| s.to_string()))
+                .collect();
+            if !qs.is_empty() {
+                return Some(qs);
+            }
+        }
+    }
+    None
 }
 
 /// Maximum size for the thinking buffer (1MB) to prevent unbounded growth.
@@ -920,7 +1353,9 @@ fn find_pattern(chars: &[char], start: usize, pattern: &[char]) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::types::chat_api::{ChatDelta, ChatStreamChoice, Content, ToolCallDelta, FunctionCallDelta};
+    use crate::types::response_api::{InputItemOrString, ResponseRequest, Tool, ToolChoice, ToolType};
 
     #[test]
     fn test_first_chunk_generates_created_event() {
@@ -942,7 +1377,7 @@ mod tests {
             usage: None,
         };
 
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
         let events = chat_chunk_to_response_events(&chunk, &mut state).unwrap();
 
         assert!(events.iter().any(|e| matches!(e, ResponseStreamEvent::Created { .. })));
@@ -978,7 +1413,7 @@ mod tests {
             usage: None,
         };
 
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
         // First chunk to establish state
         let _ = chat_chunk_to_response_events(&chunk, &mut state);
 
@@ -1051,5 +1486,75 @@ mod tests {
         assert_eq!(actual, "actual");
         assert_eq!(reasoning, Some("reasoning".to_string()));
         assert!(!is_thinking);
+    }
+
+    #[test]
+    fn test_content_part_added_includes_part_payload() {
+        let event = ResponseStreamEvent::ContentPartAdded {
+            item_id: "msg_test".to_string(),
+            output_index: 0,
+            content_index: 0,
+        };
+        let sse = event_to_sse(&event);
+        assert!(sse.contains("event: response.content_part.added"));
+        assert!(sse.contains("\"part\":{"));
+        assert!(sse.contains("\"type\":\"output_text\""));
+        assert!(sse.contains("\"annotations\":[]"));
+    }
+
+    #[test]
+    fn test_output_text_done_includes_text_payload() {
+        let event = ResponseStreamEvent::OutputTextDone {
+            item_id: "msg_test".to_string(),
+            output_index: 0,
+            content_index: 0,
+            text: "hello".to_string(),
+        };
+        let sse = event_to_sse(&event);
+        assert!(sse.contains("event: response.output_text.done"));
+        assert!(sse.contains("\"text\":\"hello\""));
+    }
+
+    #[test]
+    fn test_response_stub_json_defaults_text_when_missing() {
+        let value = response_stub_json("resp_1", "gpt-x", "in_progress", 123, None);
+        assert_eq!(
+            value.get("text"),
+            Some(&serde_json::json!({"format":{"type":"text"}}))
+        );
+    }
+
+    #[test]
+    fn test_request_context_includes_proxy_tool_map() {
+        let req = ResponseRequest {
+            model: "gpt-4o".to_string(),
+            input: InputItemOrString::String("hi".to_string()),
+            instructions: None,
+            tools: vec![Tool {
+                tool_type: ToolType::WebSearchPreview,
+                name: Some("web_search_preview".to_string()),
+                description: None,
+                parameters: None,
+                strict: None,
+                extra: HashMap::new(),
+            }],
+            tool_choice: ToolChoice::Auto,
+            stream: true,
+            temperature: None,
+            max_output_tokens: None,
+            max_tokens: None,
+            top_p: None,
+            user: None,
+            reasoning: None,
+            text: None,
+            truncation: None,
+            store: None,
+            metadata: None,
+            previous_response_id: None,
+            parallel_tool_calls: None,
+        };
+        let ctx = ResponseRequestContext::from(&req);
+        let metadata = ctx.metadata.unwrap_or_default();
+        assert!(metadata.contains_key("x_proxy_tool_map"));
     }
 }
