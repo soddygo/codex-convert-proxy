@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 // ============================================================================
 
 /// Factory function type for creating providers (type-erased function pointer).
-type ProviderFactory = unsafe fn() -> Box<dyn Provider + Send + Sync>;
+type ProviderFactory = fn() -> Box<dyn Provider + Send + Sync>;
 
 /// Static registry of provider factories.
 fn get_registry() -> &'static HashMap<&'static str, ProviderFactory> {
@@ -31,16 +31,16 @@ pub fn registered_provider_names() -> Vec<&'static str> {
 }
 
 // Factory functions (must be in separate functions to get unique addresses)
-unsafe fn glm_factory() -> Box<dyn Provider + Send + Sync> {
+fn glm_factory() -> Box<dyn Provider + Send + Sync> {
     Box::new(super::glm::GLMProvider::new())
 }
-unsafe fn kimi_factory() -> Box<dyn Provider + Send + Sync> {
+fn kimi_factory() -> Box<dyn Provider + Send + Sync> {
     Box::new(super::kimi::KimiProvider::new())
 }
-unsafe fn deepseek_factory() -> Box<dyn Provider + Send + Sync> {
+fn deepseek_factory() -> Box<dyn Provider + Send + Sync> {
     Box::new(super::deepseek::DeepSeekProvider::new())
 }
-unsafe fn minimax_factory() -> Box<dyn Provider + Send + Sync> {
+fn minimax_factory() -> Box<dyn Provider + Send + Sync> {
     Box::new(super::minimax::MiniMaxProvider::new())
 }
 
@@ -123,8 +123,7 @@ pub fn create_provider(name: &str) -> Result<Box<dyn Provider + Send + Sync>, Co
 
     // Try to get from registry
     if let Some(factory) = get_registry().get(normalized_name) {
-        // SAFETY: factory functions are guaranteed to return valid Box<dyn Provider>
-        return Ok(unsafe { factory() });
+        return Ok(factory());
     }
 
     // Return error with available provider names
