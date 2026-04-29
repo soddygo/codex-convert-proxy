@@ -12,13 +12,6 @@ use crate::util::parse_sse;
 use super::context::ProxyContext;
 use super::super::CodexProxy;
 
-/// SSE event structure from parse_sse utility.
-#[derive(Debug)]
-pub struct SseEvent {
-    pub event: Option<String>,
-    pub data: String,
-}
-
 /// Handler for streaming SSE response conversion.
 /// Processes Chat API SSE chunks and converts them to Responses API SSE events.
 pub struct StreamingResponseHandler<'a> {
