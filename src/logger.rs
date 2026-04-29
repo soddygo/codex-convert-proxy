@@ -5,6 +5,7 @@
 //! - Sensitive data masking
 //! - Request lifecycle tracking
 
+use std::cmp::min;
 use std::path::Path;
 use tracing::info;
 use tracing_subscriber::{
@@ -93,13 +94,11 @@ pub fn mask_sensitive(value: &str) -> String {
         return "***".to_string();
     }
     if value.starts_with("Bearer ") {
-        let token = &value[7..];
-        if token.len() <= 10 {
-            return "Bearer ***".to_string();
-        }
-        return format!("Bearer {}***{}", &token[..6], &token[token.len() - 4..]);
+        // 完全隐藏 Bearer token，只保留前缀标识
+        return "Bearer ***".to_string();
     }
-    format!("{}***{}", &value[..6], &value[value.len() - 4..])
+    // 对其他敏感值也完全隐藏
+    format!("{}***", &value[..min(6, value.len())])
 }
 
 #[cfg(test)]
@@ -112,11 +111,11 @@ mod tests {
         assert_eq!(mask_sensitive("Bearer sk-xxx"), "Bearer ***");
         assert_eq!(
             mask_sensitive("Bearer sk-project-12345"),
-            "Bearer sk-pro***2345"
+            "Bearer ***"
         );
         assert_eq!(
             mask_sensitive("sk-ant-api03-xxxxxxxxxxxx"),
-            "sk-ant***xxxx"
+            "sk-ant***"
         );
     }
 

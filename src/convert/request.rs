@@ -19,7 +19,12 @@ pub fn response_to_chat(
     provider: &mut dyn Provider,
     model_override: Option<&str>,
 ) -> Result<ChatRequest, ConversionError> {
-    let messages = convert_input_to_messages(response_req.input, response_req.instructions)?;
+    let enforce_tool_result_adjacency = provider.name() == "minimax";
+    let messages = convert_input_to_messages(
+        response_req.input,
+        response_req.instructions,
+        enforce_tool_result_adjacency,
+    )?;
     let tools = convert_tools(response_req.tools);
     let tool_choice = convert_tool_choice(response_req.tool_choice);
 
@@ -62,6 +67,7 @@ pub fn response_to_chat(
 fn convert_input_to_messages(
     input: InputItemOrString,
     instructions: Option<String>,
+    enforce_tool_result_adjacency: bool,
 ) -> Result<Vec<ChatMessage>, ConversionError> {
     let mut messages = Vec::new();
 
@@ -93,6 +99,8 @@ fn convert_input_to_messages(
             let mut pending_tool_calls: Option<Vec<ToolCall>> = None;
             let mut emitted_tool_call_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            let mut emitted_tool_call_names: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
 
             for item in items {
                 match item.item_type {
@@ -110,10 +118,11 @@ fn convert_input_to_messages(
                         // If we have pending tool calls and now receive an assistant message,
                         // merge them into ONE assistant message. Some providers require
                         // tool outputs to immediately follow the assistant tool_calls message.
-                        if role == MessageRole::Assistant {
+                        if enforce_tool_result_adjacency && role == MessageRole::Assistant {
                             if let Some(tool_calls) = pending_tool_calls.take() {
                                 for tc in &tool_calls {
                                     emitted_tool_call_ids.insert(tc.id.clone());
+                                    emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
                                 }
                                 messages.push(ChatMessage {
                                     role,
@@ -132,6 +141,7 @@ fn convert_input_to_messages(
                             // Flush pending tool calls before non-assistant message items
                             for tc in &tool_calls {
                                 emitted_tool_call_ids.insert(tc.id.clone());
+                                emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
                             }
                             messages.push(ChatMessage {
                                 role: MessageRole::Assistant,
@@ -177,12 +187,14 @@ fn convert_input_to_messages(
                         let output_name = item
                             .name
                             .clone()
-                            .unwrap_or_else(|| "tool_call".to_string());
+                            .or_else(|| emitted_tool_call_names.get(&call_id).cloned())
+                            .unwrap_or_else(|| "unknown_tool".to_string());
 
                         // Flush pending tool calls before FunctionCallOutput
                         if let Some(tool_calls) = pending_tool_calls.take() {
                             for tc in &tool_calls {
                                 emitted_tool_call_ids.insert(tc.id.clone());
+                                emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
                             }
                             messages.push(ChatMessage {
                                 role: MessageRole::Assistant,
@@ -197,7 +209,7 @@ fn convert_input_to_messages(
                         // Some providers require a preceding assistant.tool_calls message
                         // before each tool result. If missing in the current input window,
                         // synthesize a minimal one to preserve protocol validity.
-                        if !emitted_tool_call_ids.contains(&call_id) {
+                        if enforce_tool_result_adjacency && !emitted_tool_call_ids.contains(&call_id) {
                             warn!(
                                 "[REQUEST_CONVERT] function_call_output without preceding function_call, synthesizing assistant tool_call (call_id={}, name={})",
                                 call_id,
@@ -243,6 +255,7 @@ fn convert_input_to_messages(
             if let Some(tool_calls) = pending_tool_calls {
                 for tc in &tool_calls {
                     emitted_tool_call_ids.insert(tc.id.clone());
+                    emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
                 }
                 messages.push(ChatMessage {
                     role: MessageRole::Assistant,
@@ -438,7 +451,7 @@ mod tests {
             parallel_tool_calls: None,
         };
 
-        let mut provider = GLMProvider;
+        let mut provider = crate::providers::minimax::MiniMaxProvider;
         let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         // First message should be system
@@ -484,7 +497,7 @@ mod tests {
             parallel_tool_calls: None,
         };
 
-        let mut provider = GLMProvider;
+        let mut provider = crate::providers::minimax::MiniMaxProvider;
         let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         // Should have an assistant message with tool_calls
@@ -541,7 +554,7 @@ mod tests {
             parallel_tool_calls: None,
         };
 
-        let mut provider = GLMProvider;
+        let mut provider = crate::providers::minimax::MiniMaxProvider;
         let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         // Should have assistant message with tool_calls and tool message
@@ -589,7 +602,7 @@ mod tests {
             parallel_tool_calls: None,
         };
 
-        let mut provider = GLMProvider;
+        let mut provider = crate::providers::minimax::MiniMaxProvider;
         let chat_req = response_to_chat(request, &mut provider, None).unwrap();
         assert_eq!(chat_req.messages.len(), 2);
 
@@ -663,7 +676,7 @@ mod tests {
             parallel_tool_calls: None,
         };
 
-        let mut provider = GLMProvider;
+        let mut provider = crate::providers::minimax::MiniMaxProvider;
         let chat_req = response_to_chat(request, &mut provider, None).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
@@ -681,6 +694,69 @@ mod tests {
         assert_eq!(tool.role, MessageRole::Tool);
         assert_eq!(tool.tool_call_id.as_deref(), Some("call_1"));
         assert_eq!(tool.content.as_text(), "ok");
+    }
+
+    #[test]
+    fn test_non_minimax_keeps_assistant_and_tool_call_split() {
+        let request = ResponseRequest {
+            model: "gpt-4o".to_string(),
+            input: InputItemOrString::Array(vec![
+                InputItem {
+                    id: Some("fc_1".to_string()),
+                    item_type: InputItemType::FunctionCall,
+                    role: None,
+                    content: None,
+                    name: Some("exec_command".to_string()),
+                    arguments: Some(r#"{"cmd":"ls"}"#.to_string()),
+                    call_id: Some("call_1".to_string()),
+                    output: None,
+                },
+                InputItem {
+                    id: Some("msg_1".to_string()),
+                    item_type: InputItemType::Message,
+                    role: Some("assistant".to_string()),
+                    content: Some(ResponseContent::String("我先看下目录".to_string())),
+                    name: None,
+                    arguments: None,
+                    call_id: None,
+                    output: None,
+                },
+                InputItem {
+                    id: Some("fco_1".to_string()),
+                    item_type: InputItemType::FunctionCallOutput,
+                    role: None,
+                    content: None,
+                    name: Some("exec_command".to_string()),
+                    arguments: None,
+                    call_id: Some("call_1".to_string()),
+                    output: Some("ok".to_string()),
+                },
+            ]),
+            instructions: None,
+            tools: vec![],
+            tool_choice: ResponseToolChoice::Auto,
+            stream: false,
+            temperature: None,
+            max_tokens: None,
+            max_output_tokens: None,
+            top_p: None,
+            user: None,
+            reasoning: None,
+            text: None,
+            truncation: None,
+            store: None,
+            metadata: None,
+            previous_response_id: None,
+            parallel_tool_calls: None,
+        };
+
+        let mut provider = GLMProvider;
+        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        assert_eq!(chat_req.messages.len(), 3);
+        assert_eq!(chat_req.messages[0].role, MessageRole::Assistant);
+        assert!(chat_req.messages[0].tool_calls.is_some());
+        assert_eq!(chat_req.messages[1].role, MessageRole::Assistant);
+        assert_eq!(chat_req.messages[2].role, MessageRole::Tool);
     }
 
     #[test]

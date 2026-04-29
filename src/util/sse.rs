@@ -69,10 +69,7 @@ impl<'a> SseEventIterator<'a> {
         let text = &self.text[base_pos..];
 
         // Find "data:" prefix (with or without trailing space)
-        let data_start = match text.find("data:") {
-            Some(pos) => pos,
-            None => return None,
-        };
+        let data_start = text.find("data:")?;
 
         // Look for "event:" line before this "data:" line
         let event_type = if data_start > 0 {
@@ -181,7 +178,7 @@ pub fn parse_sse(text: &str) -> (Vec<SseEvent>, usize) {
     }
 
     // If we parsed all events without error, position will be at end of text
-    let end_pos = if events.len() > 0 && iter.position() >= text.len() {
+    let end_pos = if !events.is_empty() && iter.position() >= text.len() {
         text.len()
     } else {
         iter.position()

@@ -17,13 +17,14 @@ pub fn parse_sse_chunks(data: &[u8]) -> Result<Vec<SseChunk>, ConversionError> {
         let mut data = String::new();
 
         for line in line_group.lines() {
-            if line.starts_with("event: ") {
-                event_type = Some(line[7..].to_string());
-            } else if line.starts_with("data: ") {
+            // SSE standard: "event:" and "data:" can have optional space after colon
+            if let Some(rest) = line.strip_prefix("event:") {
+                event_type = Some(rest.trim_start().to_string());
+            } else if let Some(rest) = line.strip_prefix("data:") {
                 if !data.is_empty() {
                     data.push('\n');
                 }
-                data.push_str(&line[6..]);
+                data.push_str(rest.trim_start());
             }
         }
 
@@ -47,7 +48,8 @@ pub struct SseChunk {
 
 /// Check if data represents the SSE "done" marker.
 pub fn is_sse_done(data: &str) -> bool {
-    data.trim() == "[DONE]" || data.trim() == "data: [DONE]"
+    let trimmed = data.trim();
+    trimmed == "[DONE]" || trimmed == "data: [DONE]" || trimmed.starts_with("data:[DONE]")
 }
 
 #[cfg(test)]
@@ -74,3 +76,22 @@ mod tests {
         assert!(!is_sse_done("{\"id\":\"123\"}"));
     }
 }
+
+    #[test]
+    fn test_parse_sse_without_space() {
+        // Test parsing with no space after colon
+        let data = b"event:test\ndata:{\"id\":\"123\"}\n\ndata:{\"id\":\"456\"}\n\n";
+        let chunks = parse_sse_chunks(data).unwrap();
+        
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].event_type.as_deref(), Some("test"));
+        assert_eq!(chunks[0].data, "{\"id\":\"123\"}");
+        assert_eq!(chunks[1].event_type, None);
+        assert_eq!(chunks[1].data, "{\"id\":\"456\"}");
+    }
+    
+    #[test]
+    fn test_is_sse_done_no_space() {
+        assert!(is_sse_done("data:[DONE]"));  // no space
+        assert!(is_sse_done("data: [DONE] "));
+    }

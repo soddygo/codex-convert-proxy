@@ -23,6 +23,15 @@ use crate::convert::{ResponseRequestContext, StreamState, response_to_chat};
 use crate::providers::Provider;
 use crate::types::response_api::ResponseRequest;
 
+/// Maximum request body size (10 MB)
+const MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+/// Maximum response body size (50 MB)
+const MAX_RESPONSE_BODY_SIZE: usize = 50 * 1024 * 1024;
+
+/// Compact parsed streaming buffer after this many bytes.
+const STREAM_PARSE_COMPACT_THRESHOLD: usize = 64 * 1024;
+
 /// Proxy context attached to each request session.
 #[derive(Debug)]
 pub struct ProxyContext {
@@ -305,7 +314,7 @@ impl ProxyHttp for CodexProxy {
 
         // Inject API key for this backend
         upstream_request
-            .insert_header("authorization", &format!("Bearer {}", backend.api_key))
+            .insert_header("authorization", format!("Bearer {}", backend.api_key))
             .map_err(|e| {
                 error!("Failed to inject authorization header: {}", e);
                 pingora_core::Error::new_str("Header injection failed")
@@ -347,8 +356,12 @@ impl ProxyHttp for CodexProxy {
         // For conversion requests, buffer all chunks and suppress forwarding
         // until we have the complete body for conversion.
         if ctx.is_conversion_request {
-            // Buffer the chunk
+            // Buffer the chunk with size limit check
             if let Some(b) = body {
+                if ctx.request_body.len() + b.len() > MAX_REQUEST_BODY_SIZE {
+                    error!("[BODY] Request body exceeds maximum size limit of {} bytes", MAX_REQUEST_BODY_SIZE);
+                    return Err(pingora_core::Error::new_str("Request body too large"));
+                }
                 ctx.request_body.extend_from_slice(b);
                 debug!("[BODY] Buffered {} bytes (total: {})", b.len(), ctx.request_body.len());
             }
@@ -415,7 +428,7 @@ impl ProxyHttp for CodexProxy {
                                 *body = Some(Bytes::from(ctx.request_body.clone()));
                                 // Save full request body to file for debugging
                                 let path = "logs/codex_request_body.json";
-                                if let Ok(_) = std::fs::write(path, &ctx.request_body) {
+                                if std::fs::write(path, &ctx.request_body).is_ok() {
                                     debug!("[REQUEST BODY SAVED] to {}", path);
                                 }
                             }
@@ -567,7 +580,20 @@ impl ProxyHttp for CodexProxy {
         );
 
         if let Some(b) = body_clone.as_ref() {
-            ctx.response_body.extend_from_slice(b);
+            // Check response body size limit for non-streaming conversion only.
+            // For streaming conversion we compact parsed bytes to avoid unbounded growth
+            // and must not switch protocol mid-stream.
+            if !ctx.is_streaming
+                && ctx.is_conversion_request
+                && ctx.response_body.len() + b.len() > MAX_RESPONSE_BODY_SIZE
+            {
+                warn!(
+                    "[RESPONSE_BODY] Response body exceeds maximum size limit of {} bytes",
+                    MAX_RESPONSE_BODY_SIZE
+                );
+            } else {
+                ctx.response_body.extend_from_slice(b);
+            }
 
             // Suppress intermediate chunks for non-streaming conversion requests
             // (the converted body will be sent at end_of_body)
@@ -644,6 +670,16 @@ impl ProxyHttp for CodexProxy {
                 // Use parse_end_pos (relative to unparsed_text) to calculate absolute position
                 if new_events_count > 0 {
                     ctx.stream_body_parsed_offset += parse_end_pos;
+                }
+
+                // Compact parsed prefix periodically to keep streaming memory bounded.
+                if ctx.stream_body_parsed_offset >= STREAM_PARSE_COMPACT_THRESHOLD {
+                    ctx.response_body.drain(..ctx.stream_body_parsed_offset);
+                    debug!(
+                        "[STREAM_PARSE] compacted parsed prefix bytes={}",
+                        ctx.stream_body_parsed_offset
+                    );
+                    ctx.stream_body_parsed_offset = 0;
                 }
 
                 // For streaming responses, append response.completed event at end_of_body
@@ -792,10 +828,10 @@ impl ProxyHttp for CodexProxy {
     where
         Self::CTX: Send + Sync,
     {
-        let code = match e.etype() {
-            &pingora_core::ErrorType::ConnectTimedout => 504,
-            &pingora_core::ErrorType::ConnectRefused => 502,
-            &pingora_core::ErrorType::TLSHandshakeFailure => 502,
+        let code = match *e.etype() {
+            pingora_core::ErrorType::ConnectTimedout => 504,
+            pingora_core::ErrorType::ConnectRefused => 502,
+            pingora_core::ErrorType::TLSHandshakeFailure => 502,
             _ => 502,
         };
 
@@ -823,7 +859,7 @@ impl ProxyHttp for CodexProxy {
         .to_string();
         if let Ok(mut resp) = pingora_http::ResponseHeader::build(code, None) {
             let _ = resp.insert_header("content-type", "application/json");
-            let _ = resp.insert_header("content-length", &error_body.len().to_string());
+            let _ = resp.insert_header("content-length", error_body.len().to_string());
             let _ = session.write_response_header(Box::new(resp), false).await;
             let _ = session
                 .write_response_body(Some(bytes::Bytes::from(error_body)), true)

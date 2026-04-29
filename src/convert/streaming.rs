@@ -101,7 +101,7 @@ pub enum ResponseStreamEvent {
     },
     /// Response completed with final object.
     Completed {
-        response: ResponseObject,
+        response: Box<ResponseObject>,
     },
 }
 
@@ -277,7 +277,7 @@ impl StreamState {
     }
 
     /// Build the final ResponseObject with all accumulated outputs.
-    pub fn build_response_object(&self) -> crate::types::response_api::ResponseObject {
+    pub fn build_response_object(&self) -> Box<crate::types::response_api::ResponseObject> {
         use crate::types::response_api::{
             InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseContentPart, ResponseObject,
             ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, Usage,
@@ -362,7 +362,7 @@ impl StreamState {
             None
         };
 
-        ResponseObject {
+        Box::new(ResponseObject {
             id: self.response_id.clone(),
             object: "response".to_string(),
             status: "completed".to_string(),
@@ -394,7 +394,7 @@ impl StreamState {
                 .request_context
                 .as_ref()
                 .and_then(|ctx| ctx.reasoning.clone())
-                .or_else(|| {
+                .or({
                     Some(crate::types::response_api::ResponseReasoning {
                         effort: None,
                         summary: None,
@@ -438,7 +438,7 @@ impl StreamState {
                 .as_ref()
                 .and_then(|ctx| ctx.metadata.clone()),
             usage,
-        }
+        })
     }
 }
 
@@ -519,6 +519,7 @@ pub fn chat_chunk_to_response_events(
                     // Parse thinking tags (<think> or <thought>) from content
                     let (actual_text, reasoning_delta, new_is_thinking) =
                         parse_streaming_thinking(&text, state.is_thinking, &mut state.thinking_buffer);
+                    let sanitized_actual_text = sanitize_pseudo_tool_markup(&actual_text);
 
                     state.is_thinking = new_is_thinking;
 
@@ -548,7 +549,7 @@ pub fn chat_chunk_to_response_events(
                     }
 
                     // Emit text events if we have actual content
-                    if !actual_text.is_empty() {
+                    if !sanitized_actual_text.is_empty() {
                         if !state.is_output_item_added {
                             let text_idx = state.next_output_index;
                             state.next_output_index += 1;
@@ -574,9 +575,9 @@ pub fn chat_chunk_to_response_events(
                             item_id: state.output_id.clone(),
                             output_index: text_idx,
                             content_index: 0,
-                            delta: actual_text.clone(),
+                            delta: sanitized_actual_text.clone(),
                         });
-                        state.full_text.push_str(&actual_text);
+                        state.full_text.push_str(&sanitized_actual_text);
                     }
                 }
             }
@@ -1157,6 +1158,15 @@ fn response_stub_json(
     })
 }
 
+/// Escape pseudo XML tool tags that some upstream models emit as plain text.
+/// Those tags can break markdown/html rendering in Codex clients.
+fn sanitize_pseudo_tool_markup(text: &str) -> String {
+    text.replace("<request_user_input", "&lt;request_user_input")
+        .replace("</request_user_input>", "&lt;/request_user_input&gt;")
+        .replace("<parameter ", "&lt;parameter ")
+        .replace("</parameter>", "&lt;/parameter&gt;")
+}
+
 fn map_tool_name_to_output_type(
     tool_name: &str,
     request_context: Option<&ResponseRequestContext>,
@@ -1556,5 +1566,15 @@ mod tests {
         let ctx = ResponseRequestContext::from(&req);
         let metadata = ctx.metadata.unwrap_or_default();
         assert!(metadata.contains_key("x_proxy_tool_map"));
+    }
+
+    #[test]
+    fn test_sanitize_pseudo_tool_markup() {
+        let text = "<request_user_input\">\n<parameter name=\"questions\">x</parameter>\n</request_user_input>";
+        let sanitized = sanitize_pseudo_tool_markup(text);
+        assert!(sanitized.contains("&lt;request_user_input"));
+        assert!(sanitized.contains("&lt;parameter name=\"questions\">"));
+        assert!(sanitized.contains("&lt;/parameter&gt;"));
+        assert!(sanitized.contains("&lt;/request_user_input&gt;"));
     }
 }
