@@ -14,12 +14,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::constants::*;
 use crate::convert::{ResponseRequestContext, response_to_chat};
-use crate::types::chat_api::ChatStreamChunk;
 use crate::types::response_api::ResponseRequest;
-use crate::util::parse_sse;
 
 use super::context::ProxyContext;
 use super::core::CodexProxy;
+use crate::proxy::streaming_handler::StreamingResponseHandler;
 
 #[async_trait]
 impl ProxyHttp for CodexProxy {
@@ -454,126 +453,33 @@ impl ProxyHttp for CodexProxy {
                 // with converted Responses API events below (or empty if no events)
                 *body = Some(Bytes::new());
 
-                // Use accumulated body for SSE parsing (events may span multiple frames)
-                // Only parse from the last parsed offset to avoid re-processing events
-                let text = std::str::from_utf8(&ctx.response_body).unwrap_or("");
-                let unparsed_text = &text[ctx.stream_body_parsed_offset..];
-                debug!("[STREAM_RAW] is_streaming=true, body={}", String::from_utf8_lossy(&ctx.response_body).chars().take(200).collect::<String>());
-                let mut converted_chunks: Vec<String> = Vec::new();
+                // Extract provider_name before mutable borrow to avoid borrow conflict
+                let provider_name = ctx.provider_name.clone();
 
-                // Use SSE utility module to parse only new events
-                let (events, parse_end_pos) = parse_sse(unparsed_text);
-                let new_events_count = events.len();
-                debug!("[STREAM_PARSE] Found {} new SSE events (offset={}, parse_end={})", new_events_count, ctx.stream_body_parsed_offset, parse_end_pos);
+                // Delegate to StreamingResponseHandler for chunk processing
+                let mut handler = StreamingResponseHandler::new(
+                    ctx,
+                    provider_name.as_deref(),
+                    self.log_body,
+                    self,
+                );
 
-                for event in events {
-                    // Skip [DONE] marker events - they don't contain JSON
-                    if event.data == "[DONE]" {
-                        continue;
-                    }
-
-                    // Parse as ChatStreamChunk
-                    match serde_json::from_str::<ChatStreamChunk>(&event.data) {
-                        Ok(chunk) => {
-                            ctx.stream_chunks_parsed += 1;
-                            let mut chunk = chunk;
-
-                            // Apply provider transformation
-                            if let Some(b_name) = ctx.provider_name.as_ref() {
-                                if let Some(mut provider) = self.get_provider(b_name) {
-                                    provider.transform_stream_chunk(&mut chunk);
-                                }
-                            }
-
-                            // Convert to Response API events
-                            if let Some(ref mut state) = ctx.stream_state {
-                                // Update usage from this chunk
-                                state.update_usage(&chunk);
-
-                                match crate::convert::chat_chunk_to_response_events(&chunk, state) {
-                                    Ok(events) => {
-                                        let sse_data: String = events
-                                            .iter()
-                                            .map(crate::convert::event_to_sse)
-                                            .collect();
-                                        if !sse_data.is_empty() {
-                                            debug!("[STREAM_CHUNK] {}", sse_data);
-                                            converted_chunks.push(sse_data);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to convert stream chunk: {}", e);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            debug!("[STREAM_PARSE] Failed to parse JSON: {}", e);
-                        }
-                    }
-                }
-
-                // Update the parse offset to avoid re-parsing on next frame
-                // Use parse_end_pos (relative to unparsed_text) to calculate absolute position
-                if new_events_count > 0 {
-                    ctx.stream_body_parsed_offset += parse_end_pos;
-                }
-
-                // Compact parsed prefix periodically to keep streaming memory bounded.
-                if ctx.stream_body_parsed_offset >= STREAM_PARSE_COMPACT_THRESHOLD {
-                    ctx.response_body.drain(..ctx.stream_body_parsed_offset);
-                    debug!(
-                        "[STREAM_PARSE] compacted parsed prefix bytes={}",
-                        ctx.stream_body_parsed_offset
-                    );
-                    ctx.stream_body_parsed_offset = 0;
+                // Process streaming frames until end_of_body
+                if let Some(converted) = handler.process_stream_frame() {
+                    *body = Some(Bytes::from(converted));
                 }
 
                 // For streaming responses, append response.completed event at end_of_body
                 if end_of_body {
-                    if let Some(ref mut state) = ctx.stream_state {
-                        if !state.is_completed {
-                            if ctx.stream_chunks_parsed == 0 {
-                                warn!(
-                                    "[STREAM_COMPLETE_SKIP] skip response.completed because no valid upstream chunks were parsed (status={:?}, content_type={:?})",
-                                    ctx.upstream_status,
-                                    ctx.upstream_content_type
-                                );
-                                state.is_completed = true;
-                            } else {
-                            let response_obj = state.build_response_object();
-                            debug!(
-                                "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}, parsed_chunks={}",
-                                response_obj.id,
-                                response_obj.output.len(),
-                                state.is_reasoning_added,
-                                state.is_output_item_added,
-                                state.completed_tool_calls.len(),
-                                ctx.stream_chunks_parsed
-                            );
-                            if self.log_body {
-                                if let Ok(json) = serde_json::to_string(&response_obj) {
-                                    debug!("[STREAM_COMPLETE_JSON] {}", json);
-                                }
-                            }
-                            let completed_event = crate::convert::ResponseStreamEvent::Completed {
-                                response: response_obj,
-                            };
-                            let sse_data = crate::convert::event_to_sse(&completed_event);
-                            converted_chunks.push(sse_data);
-                            // Append SSE [DONE] marker to signal stream end
-                            converted_chunks.push("data: [DONE]\n\n".to_string());
-                            state.is_completed = true;
-                            }
-                        }
+                    let completed_events = handler.finalize_stream();
+                    if !completed_events.is_empty() {
+                        let existing = std::str::from_utf8(body.as_ref().unwrap_or(&Bytes::new()))
+                            .unwrap_or("")
+                            .to_string();
+                        let combined = format!("{}{}", existing, completed_events.join(""));
+                        *body = Some(Bytes::from(combined));
                     }
                 }
-
-                if !converted_chunks.is_empty() {
-                    *body = Some(Bytes::from(converted_chunks.join("")));
-                }
-                // If converted_chunks is empty, *body remains as Bytes::new()
-                // (set at the top of this block), suppressing the raw Chat API body.
             }
         }
 
