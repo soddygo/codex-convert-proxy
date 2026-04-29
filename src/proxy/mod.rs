@@ -2,7 +2,7 @@
 
 pub mod context;
 pub mod filters;
-pub mod proxy;
+pub mod core;
 
 pub use context::ProxyContext;
-pub use proxy::CodexProxy;
+pub use core::CodexProxy;

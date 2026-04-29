@@ -19,7 +19,7 @@ use crate::types::response_api::ResponseRequest;
 use crate::util::parse_sse;
 
 use super::context::ProxyContext;
-use super::proxy::CodexProxy;
+use super::core::CodexProxy;
 
 #[async_trait]
 impl ProxyHttp for CodexProxy {
