@@ -6,8 +6,8 @@ use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
 /// Provider trait for LLM provider-specific transformations.
 ///
 /// Each Chinese LLM provider may have slightly different API requirements
-/// or model name formats that need to be normalized.ni
-pub trait Provider: Send + Sync {
+/// or model name formats that need to be normalized.
+pub trait Provider: Send + Sync + 'static {
     /// Get provider name.
     fn name(&self) -> &'static str;
 
@@ -20,7 +20,7 @@ pub trait Provider: Send + Sync {
     /// Only returns the endpoint path, e.g., "/chat/completions".
     /// The version prefix (e.g., "/v1") should come from the backend URL's base_path.
     fn chat_completions_path(&self) -> String {
-        "/chat/completions".to_string()
+        "/v1/chat/completions".to_string()
     }
 
     /// Transform request before sending to provider.
@@ -44,6 +44,26 @@ pub trait Provider: Send + Sync {
 
     /// Clone the provider as a boxed trait object.
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync>;
+
+    /// Convert self to Any for downcasting.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl Clone for Box<dyn Provider + Send + Sync> {
+    fn clone(&self) -> Self {
+        let any = self.as_ref().as_any();
+        if let Some(p) = any.downcast_ref::<super::glm::GLMProvider>() {
+            Box::new(p.clone())
+        } else if let Some(p) = any.downcast_ref::<super::kimi::KimiProvider>() {
+            Box::new(p.clone())
+        } else if let Some(p) = any.downcast_ref::<super::deepseek::DeepSeekProvider>() {
+            Box::new(p.clone())
+        } else if let Some(p) = any.downcast_ref::<super::minimax::MiniMaxProvider>() {
+            Box::new(p.clone())
+        } else {
+            panic!("Unknown provider type")
+        }
+    }
 }
 
 /// Create a provider by name.

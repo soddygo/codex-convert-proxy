@@ -2,7 +2,9 @@
 
 use crate::providers::trait_::Provider;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use std::any::Any;
 
+#[derive(Clone)]
 /// Kimi (Moonshot AI) provider.
 ///
 /// Kimi API accepts both "kimi-" and "moonshot-v1-" model name prefixes natively.
@@ -26,7 +28,11 @@ impl Provider for KimiProvider {
         // Standard handling
     }
 
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
-        Box::new(KimiProvider)
+        Box::new(self.clone())
     }
 }

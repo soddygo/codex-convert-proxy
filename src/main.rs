@@ -53,10 +53,10 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
     let mut providers: HashMap<String, Box<dyn Provider + Send + Sync>> = HashMap::new();
     for backend in &config.backends {
         let name = backend.name.clone();
-        if !providers.contains_key(&name) {
+        if let std::collections::hash_map::Entry::Vacant(e) = providers.entry(name.clone()) {
             match create_provider(&name) {
                 Ok(p) => {
-                    providers.insert(name, p);
+                    e.insert(p);
                 }
                 Err(e) => {
                     eprintln!("Warning: Failed to create provider for {}: {}", name, e);
@@ -75,7 +75,8 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
     eprintln!();
 
     // Create CodexProxy
-    let proxy = CodexProxy::new(router, providers, config.log_body);
+    let log_dir = std::path::PathBuf::from(&config.log_dir);
+    let proxy = CodexProxy::new(router, providers, config.log_body, log_dir);
 
     // Start the pingora server (this blocks)
     server::start_proxy_server(proxy, listen);

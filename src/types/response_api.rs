@@ -158,6 +158,10 @@ pub enum ToolType {
     CodeInterpreter,
     FileSearch,
     Namespace,
+    Custom,
+    /// Catch-all for unknown tool types (forward compatibility).
+    #[serde(other)]
+    Other,
 }
 
 /// Tool choice policy.
@@ -270,6 +274,12 @@ pub enum OutputItemType {
     Reasoning,
     WebSearchCall,
     FileSearchCall,
+    CodeInterpreterCall,
+    ComputerCall,
+    CustomToolCall,
+    /// Catch-all for unknown output item types.
+    #[serde(other)]
+    Other,
 }
 
 /// Content part in response output.
@@ -369,16 +379,16 @@ pub struct Usage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct InputTokensDetails {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cached_tokens: Option<i64>,
+    #[serde(default)]
+    pub cached_tokens: i64,
 }
 
 /// Output token details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OutputTokensDetails {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_tokens: Option<i64>,
+    #[serde(default)]
+    pub reasoning_tokens: i64,
 }
 
 /// Reasoning fields on Responses request/response.

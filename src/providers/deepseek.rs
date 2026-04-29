@@ -2,7 +2,9 @@
 
 use crate::providers::trait_::Provider;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use std::any::Any;
 
+#[derive(Clone)]
 /// DeepSeek provider.
 ///
 /// DeepSeek is mostly compatible with standard Chat API.
@@ -27,7 +29,11 @@ impl Provider for DeepSeekProvider {
         // No modifications needed
     }
 
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
-        Box::new(DeepSeekProvider)
+        Box::new(self.clone())
     }
 }

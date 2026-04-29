@@ -19,18 +19,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::BackendRouter;
 use crate::config::BackendInfo;
+use crate::constants::*;
 use crate::convert::{ResponseRequestContext, StreamState, response_to_chat};
 use crate::providers::Provider;
 use crate::types::response_api::ResponseRequest;
-
-/// Maximum request body size (10 MB)
-const MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
-
-/// Maximum response body size (50 MB)
-const MAX_RESPONSE_BODY_SIZE: usize = 50 * 1024 * 1024;
-
-/// Compact parsed streaming buffer after this many bytes.
-const STREAM_PARSE_COMPACT_THRESHOLD: usize = 64 * 1024;
 
 /// Proxy context attached to each request session.
 #[derive(Debug)]
@@ -55,8 +47,6 @@ pub struct ProxyContext {
     pub rewritten_path: Option<String>,
     /// Whether this is a streaming response (for conversion tracking).
     pub is_stream_response: bool,
-    /// Collected Chat API response for conversion at end of stream.
-    pub chat_response_body: Vec<u8>,
     /// Whether this is a conversion request (Responses API -> Chat API).
     pub is_conversion_request: bool,
     /// Offset in response_body that has been parsed (to avoid re-parsing events).
@@ -89,7 +79,6 @@ impl ProxyContext {
             is_streaming: false,
             rewritten_path: None,
             is_stream_response: false,
-            chat_response_body: Vec::new(),
             is_conversion_request: false,
             stream_body_parsed_offset: 0,
             normalized_path: None,
@@ -98,6 +87,32 @@ impl ProxyContext {
             upstream_status: None,
             upstream_content_type: None,
             stream_chunks_parsed: 0,
+        }
+    }
+
+    /// Parse model name and stream flag from request body, initialize StreamState if streaming.
+    fn init_from_request_body(&mut self) {
+        if self.model.is_some() {
+            return;
+        }
+        if let Ok(text) = std::str::from_utf8(&self.request_body) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+                if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
+                    self.model = Some(model.to_string());
+                }
+                if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
+                    self.is_streaming = stream;
+                    if stream {
+                        self.is_stream_response = true;
+                        let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
+                        self.stream_state = Some(StreamState::new(
+                            format!("resp_{}", uuid::Uuid::new_v4()),
+                            model,
+                            self.response_request_context.clone(),
+                        ));
+                    }
+                }
+            }
         }
     }
 }
@@ -110,6 +125,8 @@ pub struct CodexProxy {
     pub providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
     /// Whether to log request/response bodies.
     pub log_body: bool,
+    /// Directory for debug log files.
+    pub log_dir: std::path::PathBuf,
 }
 
 impl CodexProxy {
@@ -118,11 +135,13 @@ impl CodexProxy {
         router: Arc<BackendRouter>,
         providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
         log_body: bool,
+        log_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             router,
             providers,
             log_body,
+            log_dir,
         }
     }
 
@@ -398,8 +417,7 @@ impl ProxyHttp for CodexProxy {
                                                     debug!("[CONVERTED REQUEST] {}", String::from_utf8_lossy(&converted));
                                                 }
                                                 // Save converted request for debugging to logs directory
-                                                let log_dir = std::path::Path::new("logs");
-                                                let path = log_dir.join("converted_request.json");
+                                                let path = self.log_dir.join("converted_request.json");
                                                 if std::fs::write(&path, &converted).is_ok() {
                                                     debug!("[CONVERTED REQUEST SAVED] to {}", path.display());
                                                 }
@@ -427,9 +445,9 @@ impl ProxyHttp for CodexProxy {
                                 // Restore original body to let upstream handle the error
                                 *body = Some(Bytes::from(ctx.request_body.clone()));
                                 // Save full request body to file for debugging
-                                let path = "logs/codex_request_body.json";
-                                if std::fs::write(path, &ctx.request_body).is_ok() {
-                                    debug!("[REQUEST BODY SAVED] to {}", path);
+                                let path = self.log_dir.join("codex_request_body.json");
+                                if std::fs::write(&path, &ctx.request_body).is_ok() {
+                                    debug!("[REQUEST BODY SAVED] to {}", path.display());
                                 }
                             }
                         }
@@ -437,28 +455,7 @@ impl ProxyHttp for CodexProxy {
                 }
 
                 // Parse model name from original request for logging
-                if ctx.model.is_none() {
-                    if let Ok(text) = std::str::from_utf8(&ctx.request_body) {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                            if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
-                                ctx.model = Some(model.to_string());
-                            }
-                            // Check streaming
-                            if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
-                                ctx.is_streaming = stream;
-                                if stream {
-                                    ctx.is_stream_response = true;
-                                    let model = ctx.model.clone().unwrap_or_else(|| "unknown".to_string());
-                                    ctx.stream_state = Some(StreamState::new(
-                                        format!("resp_{}", uuid::Uuid::new_v4()),
-                                        model,
-                                        ctx.response_request_context.clone(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
+                ctx.init_from_request_body();
             }
 
             return Ok(());
@@ -471,31 +468,8 @@ impl ProxyHttp for CodexProxy {
 
         // Only process when we have the complete body
         if end_of_stream && !ctx.request_body.is_empty() {
-            let _backend_name = ctx.selected_backend.as_ref().map(|b| b.name.clone());
-
             // Parse model name from original request for logging
-            if ctx.model.is_none() {
-                if let Ok(text) = std::str::from_utf8(&ctx.request_body) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                        if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
-                            ctx.model = Some(model.to_string());
-                        }
-                        // Check streaming
-                        if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
-                            ctx.is_streaming = stream;
-                            if stream {
-                                ctx.is_stream_response = true;
-                                let model = ctx.model.clone().unwrap_or_else(|| "unknown".to_string());
-                                ctx.stream_state = Some(StreamState::new(
-                                    format!("resp_{}", uuid::Uuid::new_v4()),
-                                    model,
-                                    ctx.response_request_context.clone(),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
+            ctx.init_from_request_body();
         }
 
         Ok(())
@@ -714,6 +688,8 @@ impl ProxyHttp for CodexProxy {
                             };
                             let sse_data = crate::convert::event_to_sse(&completed_event);
                             converted_chunks.push(sse_data);
+                            // Append SSE [DONE] marker to signal stream end
+                            converted_chunks.push("data: [DONE]\n\n".to_string());
                             state.is_completed = true;
                             }
                         }
@@ -896,7 +872,7 @@ mod tests {
         let router = Arc::new(BackendRouter::new(configs).unwrap());
         let mut providers = HashMap::new();
         providers.insert("glm".to_string(), Box::new(GLMProvider) as Box<dyn Provider + Send + Sync>);
-        let proxy = CodexProxy::new(router, providers, true);
+        let proxy = CodexProxy::new(router, providers, true, std::path::PathBuf::from("logs"));
         assert!(proxy.log_body);
     }
 }

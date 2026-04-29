@@ -4,9 +4,10 @@ use crate::error::ConversionError;
 use crate::types::chat_api::{ChatMessageAnnotation, ChatResponse, Content};
 use crate::types::response_api::{
     InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseAnnotation, ResponseContentPart, ResponseObject,
-    ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, ToolType, Usage,
+    ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, Usage,
 };
 use crate::convert::streaming::ResponseRequestContext;
+use super::util::{extract_queries_from_arguments, map_tool_name_to_output_type, parse_thought_tags};
 
 /// Convert a Chat API response to a Responses API ResponseObject.
 pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, ConversionError> {
@@ -138,7 +139,8 @@ pub fn chat_to_response_with_context(
                 .prompt_tokens_details
                 .as_ref()
                 .and_then(|d| d.cached_tokens)
-                .map(|v| v as i64),
+                .map(|v| v as i64)
+                .unwrap_or(0),
         }),
         output_tokens: u.completion_tokens.map(|t| t as i64),
         output_tokens_details: Some(OutputTokensDetails {
@@ -146,7 +148,8 @@ pub fn chat_to_response_with_context(
                 .completion_tokens_details
                 .as_ref()
                 .and_then(|d| d.reasoning_tokens)
-                .map(|v| v as i64),
+                .map(|v| v as i64)
+                .unwrap_or(0),
         }),
         total_tokens: u.total_tokens.map(|t| t as i64),
     });
@@ -185,110 +188,6 @@ pub fn chat_to_response_with_context(
         metadata: request_context.and_then(|ctx| ctx.metadata.clone()),
         usage,
     })
-}
-
-fn map_tool_name_to_output_type(
-    tool_name: &str,
-    original_tools: Option<&Vec<crate::types::response_api::Tool>>,
-) -> OutputItemType {
-    if let Some(tools) = original_tools {
-        for t in tools {
-            if t.name.as_deref() == Some(tool_name) {
-                return match t.tool_type {
-                    ToolType::WebSearchPreview => OutputItemType::WebSearchCall,
-                    ToolType::FileSearch => OutputItemType::FileSearchCall,
-                    _ => OutputItemType::FunctionCall,
-                };
-            }
-        }
-    }
-    match tool_name {
-        "web_search_preview" | "web_search" => OutputItemType::WebSearchCall,
-        "file_search" => OutputItemType::FileSearchCall,
-        _ => OutputItemType::FunctionCall,
-    }
-}
-
-fn extract_queries_from_arguments(arguments: &str) -> Option<Vec<String>> {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) {
-        if let Some(query) = value.get("query").and_then(|v| v.as_str()) {
-            return Some(vec![query.to_string()]);
-        }
-        if let Some(queries) = value.get("queries").and_then(|v| v.as_array()) {
-            let qs: Vec<String> = queries
-                .iter()
-                .filter_map(|q| q.as_str().map(|s| s.to_string()))
-                .collect();
-            if !qs.is_empty() {
-                return Some(qs);
-            }
-        }
-    }
-    None
-}
-
-/// Parse thinking tags from content and extract reasoning text.
-///
-/// Supports both `<thought>...</thought>` and `<think>...</think>` tags
-/// (MiniMax uses `<think>`, OpenAI-compatible models use `<thought>`).
-///
-/// Returns (actual_content, reasoning_text) where reasoning_text is the content
-/// inside thinking tags, and actual_content is everything else.
-pub fn parse_thought_tags(content: &str) -> (String, Option<String>) {
-    let mut actual_content = String::new();
-    let mut reasoning_parts: Vec<String> = Vec::new();
-    let mut remaining = content;
-
-    // Try both tag formats
-    loop {
-        // Find the next opening tag (either <thought> or <think>)
-        let thought_start = remaining.find("<thought>");
-        let think_start = remaining.find("<think>");
-
-        let (start_idx, open_tag, close_tag) = match (thought_start, think_start) {
-            (Some(t), Some(k)) => {
-                if t <= k {
-                    (t, "<thought>", "</thought>")
-                } else {
-                    (k, "<think>", "</think>")
-                }
-            }
-            (Some(t), None) => (t, "<thought>", "</thought>"),
-            (None, Some(k)) => (k, "<think>", "</think>"),
-            (None, None) => break,
-        };
-
-        // Add content before the tag to actual_content
-        actual_content.push_str(&remaining[..start_idx]);
-
-        // Find the closing tag
-        let after_start = &remaining[start_idx + open_tag.len()..];
-        if let Some(end_idx) = after_start.find(close_tag) {
-            // Extract reasoning content
-            let reasoning_content = &after_start[..end_idx];
-            if !reasoning_content.is_empty() {
-                reasoning_parts.push(reasoning_content.to_string());
-            }
-            // Continue with content after closing tag
-            remaining = &after_start[end_idx + close_tag.len()..];
-        } else {
-            // No closing tag found, treat rest as actual content
-            actual_content.push_str(&remaining[start_idx..]);
-            remaining = "";
-            break;
-        }
-    }
-
-    // Add any remaining content
-    actual_content.push_str(remaining);
-
-    let reasoning = if reasoning_parts.is_empty() {
-        None
-    } else {
-        Some(reasoning_parts.join("\n\n"))
-    };
-
-    (actual_content.trim().to_string(), reasoning)
 }
 
 /// Extract text content from a ChatMessage.
@@ -351,6 +250,8 @@ mod tests {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             }),
+            service_tier: None,
+            system_fingerprint: None,
         };
 
         let response = chat_to_response(chat_resp).unwrap();
@@ -410,6 +311,8 @@ mod tests {
                     reasoning_tokens: Some(7),
                 }),
             }),
+            service_tier: None,
+            system_fingerprint: None,
         };
 
         let response = chat_to_response(chat_resp).unwrap();
@@ -422,16 +325,12 @@ mod tests {
         }
         let usage = response.usage.unwrap();
         assert_eq!(
-            usage
-                .input_tokens_details
-                .and_then(|d| d.cached_tokens),
-            Some(3)
+            usage.input_tokens_details.unwrap().cached_tokens,
+            3
         );
         assert_eq!(
-            usage
-                .output_tokens_details
-                .and_then(|d| d.reasoning_tokens),
-            Some(7)
+            usage.output_tokens_details.unwrap().reasoning_tokens,
+            7
         );
     }
 
@@ -462,6 +361,8 @@ mod tests {
                 finish_reason: Some("tool_calls".to_string()),
             }],
             usage: None,
+            service_tier: None,
+            system_fingerprint: None,
         };
 
         let response = chat_to_response(chat_resp).unwrap();
@@ -505,6 +406,8 @@ mod tests {
                 finish_reason: Some("tool_calls".to_string()),
             }],
             usage: None,
+            service_tier: None,
+            system_fingerprint: None,
         };
 
         let req = ResponseRequest {

@@ -2,7 +2,9 @@
 
 use crate::providers::trait_::Provider;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use std::any::Any;
 
+#[derive(Clone)]
 /// GLM (Zhipu AI) provider.
 ///
 /// GLM has some specific requirements:
@@ -59,8 +61,12 @@ impl Provider for GLMProvider {
         }
     }
 
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
-        Box::new(GLMProvider)
+        Box::new(self.clone())
     }
 }
 
@@ -89,6 +95,16 @@ mod tests {
             top_p: None,
             user: None,
             stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            stop: None,
+            response_format: None,
+            seed: None,
+            service_tier: None,
         };
 
         let mut provider = GLMProvider;
@@ -122,6 +138,16 @@ mod tests {
             top_p: None,
             user: None,
             stream_options: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: None,
+            logprobs: None,
+            top_logprobs: None,
+            n: None,
+            stop: None,
+            response_format: None,
+            seed: None,
+            service_tier: None,
         };
 
         let mut provider = GLMProvider;
