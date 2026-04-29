@@ -268,15 +268,18 @@ impl ProxyHttp for CodexProxy {
                 // Parse and convert request
                 if let (Some(b_name), Some(_backend)) = (backend_name.as_ref(), ctx.selected_backend.as_ref()) {
                     if let Some(mut provider) = self.get_provider(b_name) {
-                        // Get model override from backend config
-                        let model_override = ctx.selected_backend.as_ref().and_then(|b| b.model.as_deref());
+                        // Get model override from backend config (extract value before mutable borrow)
+                        let model_override = ctx.selected_backend.as_ref()
+                            .and_then(|b| b.model.as_deref())
+                            .map(|s| s.to_string());
                         // Parse as ResponseRequest
                         match serde_json::from_slice::<ResponseRequest>(&ctx.request_body) {
                             Ok(response_req) => {
-                                ctx.response_request_context =
-                                    Some(ResponseRequestContext::from(&response_req));
-                                // Convert using provider
-                                match response_to_chat(response_req, provider.as_mut(), model_override) {
+                                let context = ResponseRequestContext::from(&response_req);
+                                // Set context before converting (needs mutable ctx)
+                                ctx.set_response_request_context(context);
+                                // Convert using provider (model_override is now an owned String)
+                                match response_to_chat(response_req, provider.as_mut(), model_override.as_deref()) {
                                     Ok(chat_req) => {
                                         // Serialize ChatRequest as JSON
                                         match serde_json::to_vec(&chat_req) {
@@ -581,9 +584,12 @@ impl ProxyHttp for CodexProxy {
             if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty() {
                 if let Ok(text) = std::str::from_utf8(&ctx.response_body) {
                     if let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
+                        // Get context from stream_state (set during request_body_filter)
+                        let request_context = ctx.stream_state.as_ref()
+                            .and_then(|s| s.request_context.as_ref());
                         match crate::convert::chat_to_response_with_context(
                             chat_resp,
-                            ctx.response_request_context.as_ref(),
+                            request_context,
                         ) {
                             Ok(response_obj) => {
                                 if let Ok(converted) = serde_json::to_vec(&response_obj) {

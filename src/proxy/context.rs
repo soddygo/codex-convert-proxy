@@ -18,7 +18,7 @@ pub struct ProxyContext {
     pub selected_backend: Option<BackendInfo>,
     /// Provider name.
     pub provider_name: Option<String>,
-    /// Stream state for SSE conversion.
+    /// Stream state for SSE conversion (also used for non-streaming conversion context).
     pub stream_state: Option<StreamState>,
     /// Response body collected for conversion.
     pub response_body: Vec<u8>,
@@ -34,8 +34,6 @@ pub struct ProxyContext {
     pub stream_body_parsed_offset: usize,
     /// Request path after optional routing prefix stripping.
     pub normalized_path: Option<String>,
-    /// Parsed original Responses request for protocol-aligned streaming events.
-    pub response_request_context: Option<ResponseRequestContext>,
     /// Whether current upstream response should be converted as SSE stream.
     pub should_convert_stream_response: bool,
     /// Upstream status code captured in response_filter for diagnostics.
@@ -63,7 +61,6 @@ impl ProxyContext {
             is_conversion_request: false,
             stream_body_parsed_offset: 0,
             normalized_path: None,
-            response_request_context: None,
             should_convert_stream_response: false,
             upstream_status: None,
             upstream_content_type: None,
@@ -71,7 +68,9 @@ impl ProxyContext {
         }
     }
 
-    /// Parse model name and stream flag from request body, initialize StreamState if streaming.
+    /// Parse model name and stream flag from request body.
+    /// Initializes StreamState for ALL conversion requests (both streaming and non-streaming).
+    /// StreamState holds ResponseRequestContext for protocol-aligned response generation.
     pub fn init_from_request_body(&mut self) {
         if self.model.is_some() {
             return;
@@ -85,15 +84,41 @@ impl ProxyContext {
                     self.is_streaming = stream;
                     if stream {
                         self.is_stream_response = true;
-                        let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
-                        self.stream_state = Some(StreamState::new(
-                            format!("resp_{}", uuid::Uuid::new_v4()),
-                            model,
-                            self.response_request_context.clone(),
-                        ));
                     }
                 }
+
+                // Always initialize StreamState for conversion requests to hold context
+                // This is used for both streaming and non-streaming conversion
+                if self.is_conversion_request {
+                    let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
+                    // Get response_request_context from the stored request if available
+                    let context = self.stream_state
+                        .as_ref()
+                        .and_then(|s| s.request_context.clone());
+                    self.stream_state = Some(StreamState::new(
+                        format!("resp_{}", uuid::Uuid::new_v4()),
+                        model,
+                        context,
+                    ));
+                }
             }
+        }
+    }
+
+    /// Set the response request context from a parsed ResponseRequest.
+    /// This should be called during request_body_filter processing.
+    pub fn set_response_request_context(&mut self, context: ResponseRequestContext) {
+        // If stream_state already exists, update its request_context
+        if let Some(ref mut state) = self.stream_state {
+            state.request_context = Some(context);
+        } else {
+            // Create stream_state with the context
+            let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
+            self.stream_state = Some(StreamState::new(
+                format!("resp_{}", uuid::Uuid::new_v4()),
+                model,
+                Some(context),
+            ));
         }
     }
 }
