@@ -11,6 +11,12 @@ use std::any::Any;
 /// Minimal transformation needed.
 pub struct DeepSeekProvider;
 
+impl DeepSeekProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Provider for DeepSeekProvider {
     fn name(&self) -> &'static str {
         "deepseek"

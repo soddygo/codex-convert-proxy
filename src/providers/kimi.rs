@@ -11,6 +11,12 @@ use std::any::Any;
 /// No model name normalization is needed.
 pub struct KimiProvider;
 
+impl KimiProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Provider for KimiProvider {
     fn name(&self) -> &'static str {
         "kimi"

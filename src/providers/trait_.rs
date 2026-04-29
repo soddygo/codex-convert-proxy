@@ -2,6 +2,51 @@
 
 use crate::error::ConversionError;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+// ============================================================================
+// Provider Factory Registry
+// ============================================================================
+
+/// Factory function type for creating providers (type-erased function pointer).
+type ProviderFactory = unsafe fn() -> Box<dyn Provider + Send + Sync>;
+
+/// Static registry of provider factories.
+fn get_registry() -> &'static HashMap<&'static str, ProviderFactory> {
+    static REGISTRY: OnceLock<HashMap<&'static str, ProviderFactory>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut m = HashMap::new();
+        m.insert("glm", glm_factory as ProviderFactory);
+        m.insert("kimi", kimi_factory as ProviderFactory);
+        m.insert("deepseek", deepseek_factory as ProviderFactory);
+        m.insert("minimax", minimax_factory as ProviderFactory);
+        m
+    })
+}
+
+/// Get all registered provider names.
+pub fn registered_provider_names() -> Vec<&'static str> {
+    get_registry().keys().copied().collect()
+}
+
+// Factory functions (must be in separate functions to get unique addresses)
+unsafe fn glm_factory() -> Box<dyn Provider + Send + Sync> {
+    Box::new(super::glm::GLMProvider::new())
+}
+unsafe fn kimi_factory() -> Box<dyn Provider + Send + Sync> {
+    Box::new(super::kimi::KimiProvider::new())
+}
+unsafe fn deepseek_factory() -> Box<dyn Provider + Send + Sync> {
+    Box::new(super::deepseek::DeepSeekProvider::new())
+}
+unsafe fn minimax_factory() -> Box<dyn Provider + Send + Sync> {
+    Box::new(super::minimax::MiniMaxProvider::new())
+}
+
+// ============================================================================
+// Provider Trait
+// ============================================================================
 
 /// Provider trait for LLM provider-specific transformations.
 ///
@@ -49,34 +94,43 @@ pub trait Provider: Send + Sync + 'static {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+// ============================================================================
+// Clone Implementation
+// ============================================================================
+
+/// Clone for Box<dyn Provider> uses downcasting (Rust object safety limitation).
 impl Clone for Box<dyn Provider + Send + Sync> {
     fn clone(&self) -> Self {
-        let any = self.as_ref().as_any();
-        if let Some(p) = any.downcast_ref::<super::glm::GLMProvider>() {
-            Box::new(p.clone())
-        } else if let Some(p) = any.downcast_ref::<super::kimi::KimiProvider>() {
-            Box::new(p.clone())
-        } else if let Some(p) = any.downcast_ref::<super::deepseek::DeepSeekProvider>() {
-            Box::new(p.clone())
-        } else if let Some(p) = any.downcast_ref::<super::minimax::MiniMaxProvider>() {
-            Box::new(p.clone())
-        } else {
-            panic!("Unknown provider type")
-        }
+        self.as_ref().clone_box()
     }
 }
 
-/// Create a provider by name.
-pub fn create_provider(name: &str) -> Result<Box<dyn Provider>, ConversionError> {
-    match name.to_lowercase().as_str() {
-        "glm" => Ok(Box::new(super::glm::GLMProvider)),
-        "kimi" => Ok(Box::new(super::kimi::KimiProvider)),
-        "moonshot" => Ok(Box::new(super::kimi::KimiProvider)),
-        "deepseek" => Ok(Box::new(super::deepseek::DeepSeekProvider)),
-        "minimax" => Ok(Box::new(super::minimax::MiniMaxProvider)),
-        _ => Err(ConversionError::ProviderError(format!(
-            "Unknown provider: {}",
-            name
-        ))),
+// ============================================================================
+// Factory Function
+// ============================================================================
+
+/// Create a provider by name using the static registry.
+///
+/// Supports both exact names and aliases (e.g., "moonshot" -> "kimi").
+pub fn create_provider(name: &str) -> Result<Box<dyn Provider + Send + Sync>, ConversionError> {
+    let name_lower = name.to_lowercase();
+
+    // Handle aliases
+    let normalized_name = match name_lower.as_str() {
+        "moonshot" => "kimi",
+        other => other,
+    };
+
+    // Try to get from registry
+    if let Some(factory) = get_registry().get(normalized_name) {
+        // SAFETY: factory functions are guaranteed to return valid Box<dyn Provider>
+        return Ok(unsafe { factory() });
     }
+
+    // Return error with available provider names
+    let available = registered_provider_names();
+    Err(ConversionError::ProviderError(format!(
+        "Unknown provider: {}. Available: {:?}",
+        name, available
+    )))
 }

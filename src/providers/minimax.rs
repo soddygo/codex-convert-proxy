@@ -12,6 +12,12 @@ use std::any::Any;
 /// - Does not support 'developer' role, convert to 'user'
 pub struct MiniMaxProvider;
 
+impl MiniMaxProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Provider for MiniMaxProvider {
     fn name(&self) -> &'static str {
         "minimax"

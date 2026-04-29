@@ -1,5 +1,8 @@
 //! Proxy module for pingora integration.
 
-pub mod proxy_impl;
+pub mod context;
+pub mod filters;
+pub mod proxy;
 
-pub use proxy_impl::*;
+pub use context::ProxyContext;
+pub use proxy::CodexProxy;

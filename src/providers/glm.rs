@@ -13,6 +13,12 @@ use std::any::Any;
 /// - API path is /chat/completions (not /v1/chat/completions)
 pub struct GLMProvider;
 
+impl GLMProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 impl Provider for GLMProvider {
     fn name(&self) -> &'static str {
         "glm"

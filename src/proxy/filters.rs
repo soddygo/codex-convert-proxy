@@ -1,11 +1,6 @@
-//! Pingora ProxyHttp implementation for Codex Convert Proxy.
-//!
-//! This module provides full ProxyHttp trait implementation for HTTP proxying
-//! with request/response format conversion between Responses API and Chat API.
+//! Pingora ProxyHttp trait implementation.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -17,139 +12,14 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 use tracing::{debug, error, info, warn};
 
-use crate::config::BackendRouter;
-use crate::config::BackendInfo;
 use crate::constants::*;
-use crate::convert::{ResponseRequestContext, StreamState, response_to_chat};
-use crate::providers::Provider;
+use crate::convert::{ResponseRequestContext, response_to_chat};
+use crate::types::chat_api::ChatStreamChunk;
 use crate::types::response_api::ResponseRequest;
+use crate::util::parse_sse;
 
-/// Proxy context attached to each request session.
-#[derive(Debug)]
-pub struct ProxyContext {
-    /// Request start time for duration tracking.
-    pub start_time: Instant,
-    /// Collected request body bytes.
-    pub request_body: Vec<u8>,
-    /// Model name parsed from request.
-    pub model: Option<String>,
-    /// Selected backend for this request.
-    pub selected_backend: Option<BackendInfo>,
-    /// Provider name.
-    pub provider_name: Option<String>,
-    /// Stream state for SSE conversion.
-    pub stream_state: Option<StreamState>,
-    /// Response body collected for conversion.
-    pub response_body: Vec<u8>,
-    /// Whether streaming is enabled.
-    pub is_streaming: bool,
-    /// Rewritten upstream path.
-    pub rewritten_path: Option<String>,
-    /// Whether this is a streaming response (for conversion tracking).
-    pub is_stream_response: bool,
-    /// Whether this is a conversion request (Responses API -> Chat API).
-    pub is_conversion_request: bool,
-    /// Offset in response_body that has been parsed (to avoid re-parsing events).
-    pub stream_body_parsed_offset: usize,
-    /// Request path after optional routing prefix stripping.
-    pub normalized_path: Option<String>,
-    /// Parsed original Responses request for protocol-aligned streaming events.
-    pub response_request_context: Option<ResponseRequestContext>,
-    /// Whether current upstream response should be converted as SSE stream.
-    pub should_convert_stream_response: bool,
-    /// Upstream status code captured in response_filter for diagnostics.
-    pub upstream_status: Option<u16>,
-    /// Upstream content-type captured in response_filter for diagnostics.
-    pub upstream_content_type: Option<String>,
-    /// Number of valid upstream chat stream chunks parsed.
-    pub stream_chunks_parsed: usize,
-}
-
-impl ProxyContext {
-    /// Create a new proxy context.
-    fn new() -> Self {
-        Self {
-            start_time: Instant::now(),
-            request_body: Vec::new(),
-            model: None,
-            selected_backend: None,
-            provider_name: None,
-            stream_state: None,
-            response_body: Vec::new(),
-            is_streaming: false,
-            rewritten_path: None,
-            is_stream_response: false,
-            is_conversion_request: false,
-            stream_body_parsed_offset: 0,
-            normalized_path: None,
-            response_request_context: None,
-            should_convert_stream_response: false,
-            upstream_status: None,
-            upstream_content_type: None,
-            stream_chunks_parsed: 0,
-        }
-    }
-
-    /// Parse model name and stream flag from request body, initialize StreamState if streaming.
-    fn init_from_request_body(&mut self) {
-        if self.model.is_some() {
-            return;
-        }
-        if let Ok(text) = std::str::from_utf8(&self.request_body) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
-                    self.model = Some(model.to_string());
-                }
-                if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
-                    self.is_streaming = stream;
-                    if stream {
-                        self.is_stream_response = true;
-                        let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
-                        self.stream_state = Some(StreamState::new(
-                            format!("resp_{}", uuid::Uuid::new_v4()),
-                            model,
-                            self.response_request_context.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Codex proxy handler implementing ProxyHttp trait.
-pub struct CodexProxy {
-    /// Backend router for multi-backend routing.
-    pub router: Arc<BackendRouter>,
-    /// Providers for each backend.
-    pub providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
-    /// Whether to log request/response bodies.
-    pub log_body: bool,
-    /// Directory for debug log files.
-    pub log_dir: std::path::PathBuf,
-}
-
-impl CodexProxy {
-    /// Create a new CodexProxy instance.
-    pub fn new(
-        router: Arc<BackendRouter>,
-        providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
-        log_body: bool,
-        log_dir: std::path::PathBuf,
-    ) -> Self {
-        Self {
-            router,
-            providers,
-            log_body,
-            log_dir,
-        }
-    }
-
-    /// Get cloned provider for a backend.
-    fn get_provider(&self, name: &str) -> Option<Box<dyn Provider + Send + Sync>> {
-        self.providers.get(name).map(|p| p.clone_box())
-    }
-}
+use super::context::ProxyContext;
+use super::proxy::CodexProxy;
 
 #[async_trait]
 impl ProxyHttp for CodexProxy {
@@ -589,7 +459,7 @@ impl ProxyHttp for CodexProxy {
                 let mut converted_chunks: Vec<String> = Vec::new();
 
                 // Use SSE utility module to parse only new events
-                let (events, parse_end_pos) = crate::util::parse_sse(unparsed_text);
+                let (events, parse_end_pos) = parse_sse(unparsed_text);
                 let new_events_count = events.len();
                 debug!("[STREAM_PARSE] Found {} new SSE events (offset={}, parse_end={})", new_events_count, ctx.stream_body_parsed_offset, parse_end_pos);
 
@@ -600,7 +470,7 @@ impl ProxyHttp for CodexProxy {
                     }
 
                     // Parse as ChatStreamChunk
-                    match serde_json::from_str::<crate::types::chat_api::ChatStreamChunk>(&event.data) {
+                    match serde_json::from_str::<ChatStreamChunk>(&event.data) {
                         Ok(chunk) => {
                             ctx.stream_chunks_parsed += 1;
                             let mut chunk = chunk;
@@ -851,10 +721,14 @@ impl ProxyHttp for CodexProxy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
     use crate::config::{BackendConfig, MatchRules};
     use crate::providers::GLMProvider;
     use crate::providers::Provider;
+
+    use super::CodexProxy;
 
     #[test]
     fn test_proxy_creation() {
@@ -869,7 +743,7 @@ mod tests {
                 ..Default::default()
             },
         }];
-        let router = Arc::new(BackendRouter::new(configs).unwrap());
+        let router = Arc::new(crate::config::BackendRouter::new(configs).unwrap());
         let mut providers = HashMap::new();
         providers.insert("glm".to_string(), Box::new(GLMProvider) as Box<dyn Provider + Send + Sync>);
         let proxy = CodexProxy::new(router, providers, true, std::path::PathBuf::from("logs"));
