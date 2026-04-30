@@ -130,14 +130,11 @@ pub fn parse_streaming_thinking(
     buffer.push_str(text);
 
     if buffer.len() > MAX_THINKING_BUFFER_SIZE {
-        // Buffer exceeded limit while accumulating content.
-        // We need to emit the thinking content, but NOT clear the buffer
-        // if we're still in thinking mode (is_thinking=true), because
-        // we need to continue the SAME thinking block when more content arrives.
+        // Buffer exceeded limit - emit accumulated content and clear buffer.
+        // We always clear the buffer since content was already emitted via flushed.
+        // The is_thinking flag preserves state for next chunk (open tag still pending).
         let flushed = buffer.clone();
-        if !is_thinking {
-            buffer.clear();
-        }
+        buffer.clear();
         return (String::new(), Some(flushed), is_thinking);
     }
 

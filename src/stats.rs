@@ -180,13 +180,21 @@ impl RequestStats {
     pub fn export_json(&self) -> serde_json::Value {
         let summary = self.summary();
 
-        let model_counts: HashMap<String, u64> = self.model_counts.lock()
-            .map(|counts| counts.iter().map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed))).collect())
-            .unwrap_or_default();
+        let model_counts: HashMap<String, u64> = match self.model_counts.lock() {
+            Ok(counts) => counts.iter().map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed))).collect(),
+            Err(poisoned) => {
+                tracing::warn!("Stats lock poisoned, using default: {}", poisoned);
+                HashMap::new()
+            }
+        };
 
-        let backend_counts: HashMap<String, u64> = self.backend_counts.lock()
-            .map(|counts| counts.iter().map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed))).collect())
-            .unwrap_or_default();
+        let backend_counts: HashMap<String, u64> = match self.backend_counts.lock() {
+            Ok(counts) => counts.iter().map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed))).collect(),
+            Err(poisoned) => {
+                tracing::warn!("Backend counts lock poisoned: {}", poisoned);
+                HashMap::new()
+            }
+        };
 
         serde_json::json!({
             "summary": {
