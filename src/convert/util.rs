@@ -4,6 +4,7 @@ use crate::constants::MAX_THINKING_BUFFER_SIZE;
 use crate::types::response_api::{OutputItemType, Tool, ToolType};
 
 use super::streaming::ResponseRequestContext;
+use memchr::memmem;
 
 /// Map a tool name to its `OutputItemType` using the original tools list.
 pub fn map_tool_name_to_output_type(
@@ -137,78 +138,78 @@ pub fn parse_streaming_thinking(
     let full_content = buffer.clone();
     buffer.clear();
 
+    let bytes = full_content.as_bytes();
     let mut pos = 0;
-    let chars: Vec<char> = full_content.chars().collect();
 
-    while pos < chars.len() {
+    while pos < bytes.len() {
         if current_is_thinking {
-            let think_close = find_pattern(&chars, pos, &['<', '/', 't', 'h', 'i', 'n', 'k', '>']);
-            let thought_close = find_pattern(&chars, pos, &['<', '/', 't', 'h', 'o', 'u', 'g', 'h', 't', '>']);
+            let think_close = memmem::find(&bytes[pos..], b"</think>");
+                let thought_close = memmem::find(&bytes[pos..], b"</thought>");
 
             match (think_close, thought_close) {
                 (Some(close_pos), Some(thought_close_pos)) => {
                     if close_pos <= thought_close_pos {
-                        let content: String = chars[pos..close_pos].iter().collect();
-                        reasoning.push_str(&content);
-                        pos = close_pos + 8;
+                        let content = std::str::from_utf8(&bytes[pos..pos + close_pos]).unwrap_or("");
+                        reasoning.push_str(content);
+                        pos += close_pos + 8;
                         current_is_thinking = false;
                     } else {
-                        let content: String = chars[pos..thought_close_pos].iter().collect();
-                        reasoning.push_str(&content);
-                        pos = thought_close_pos + 10;
+                        let content = std::str::from_utf8(&bytes[pos..pos + thought_close_pos]).unwrap_or("");
+                        reasoning.push_str(content);
+                        pos += thought_close_pos + 10;
                         current_is_thinking = false;
                     }
                 }
                 (Some(close_pos), None) => {
-                    let content: String = chars[pos..close_pos].iter().collect();
-                    reasoning.push_str(&content);
-                    pos = close_pos + 8;
+                    let content = std::str::from_utf8(&bytes[pos..pos + close_pos]).unwrap_or("");
+                    reasoning.push_str(content);
+                    pos += close_pos + 8;
                     current_is_thinking = false;
                 }
                 (None, Some(thought_close_pos)) => {
-                    let content: String = chars[pos..thought_close_pos].iter().collect();
-                    reasoning.push_str(&content);
-                    pos = thought_close_pos + 10;
+                    let content = std::str::from_utf8(&bytes[pos..pos + thought_close_pos]).unwrap_or("");
+                    reasoning.push_str(content);
+                    pos += thought_close_pos + 10;
                     current_is_thinking = false;
                 }
                 (None, None) => {
-                    let remaining: String = chars[pos..].iter().collect();
-                    buffer.push_str(&remaining);
+                    let remaining = std::str::from_utf8(&bytes[pos..]).unwrap_or("");
+                    buffer.push_str(remaining);
                     break;
                 }
             }
         } else {
-            let think_open = find_pattern(&chars, pos, &['<', 't', 'h', 'i', 'n', 'k', '>']);
-            let thought_open = find_pattern(&chars, pos, &['<', 't', 'h', 'o', 'u', 'g', 'h', 't', '>']);
+            let think_open = memmem::find(&bytes[pos..], b"<think>");
+            let thought_open = memmem::find(&bytes[pos..], b"<thought>");
 
             match (think_open, thought_open) {
                 (Some(open_pos), Some(thought_open_pos)) => {
                     if open_pos <= thought_open_pos {
-                        let content: String = chars[pos..open_pos].iter().collect();
+                        let content = std::str::from_utf8(&bytes[pos..pos + open_pos]).unwrap_or("");
                         actual_text.push_str(&content);
-                        pos = open_pos + 7;
+                        pos += open_pos + 7;
                         current_is_thinking = true;
                     } else {
-                        let content: String = chars[pos..thought_open_pos].iter().collect();
+                        let content = std::str::from_utf8(&bytes[pos..pos + thought_open_pos]).unwrap_or("");
                         actual_text.push_str(&content);
-                        pos = thought_open_pos + 9;
+                        pos += thought_open_pos + 9;
                         current_is_thinking = true;
                     }
                 }
                 (Some(open_pos), None) => {
-                    let content: String = chars[pos..open_pos].iter().collect();
+                    let content = std::str::from_utf8(&bytes[pos..pos + open_pos]).unwrap_or("");
                     actual_text.push_str(&content);
-                    pos = open_pos + 7;
+                    pos += open_pos + 7;
                     current_is_thinking = true;
                 }
                 (None, Some(thought_open_pos)) => {
-                    let content: String = chars[pos..thought_open_pos].iter().collect();
+                    let content = std::str::from_utf8(&bytes[pos..pos + thought_open_pos]).unwrap_or("");
                     actual_text.push_str(&content);
-                    pos = thought_open_pos + 9;
+                    pos += thought_open_pos + 9;
                     current_is_thinking = true;
                 }
                 (None, None) => {
-                    let remaining: String = chars[pos..].iter().collect();
+                    let remaining = std::str::from_utf8(&bytes[pos..]).unwrap_or("");
                     actual_text.push_str(&remaining);
                     break;
                 }

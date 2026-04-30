@@ -30,6 +30,9 @@ http-body-util = "0.1.3"
 bytes = "1"
 url = "2.5"
 
+# String search optimization
+memchr = "2.5"
+
 # HTTP client for manual upstream requests
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 

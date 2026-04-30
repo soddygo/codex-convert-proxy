@@ -462,6 +462,7 @@ dependencies = [
  "clap",
  "http",
  "http-body-util",
+ "memchr",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

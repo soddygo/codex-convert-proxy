@@ -6,38 +6,34 @@
 use tracing::{debug, error, warn};
 
 use crate::convert::{chat_chunk_to_response_events, event_to_sse, ResponseStreamEvent};
+use crate::providers::Provider;
 use crate::types::chat_api::ChatStreamChunk;
 use crate::util::parse_sse;
 
 use super::context::ProxyContext;
-use super::super::CodexProxy;
 
 /// Handler for streaming SSE response conversion.
 /// Processes Chat API SSE chunks and converts them to Responses API SSE events.
 pub struct StreamingResponseHandler<'a> {
     /// Reference to proxy context for state access.
     ctx: &'a mut ProxyContext,
-    /// Provider name for transformations.
-    provider_name: Option<&'a str>,
+    /// Provider clone for transformations (owned to avoid lifetime complexity).
+    provider: Option<Box<dyn Provider + Send + Sync>>,
     /// Whether to log bodies for debugging.
     log_body: bool,
-    /// Reference to CodexProxy for provider access.
-    proxy: &'a CodexProxy,
 }
 
 impl<'a> StreamingResponseHandler<'a> {
     /// Create a new streaming handler.
     pub fn new(
         ctx: &'a mut ProxyContext,
-        provider_name: Option<&'a str>,
+        provider: Option<Box<dyn Provider + Send + Sync>>,
         log_body: bool,
-        proxy: &'a CodexProxy,
     ) -> Self {
         Self {
             ctx,
-            provider_name,
+            provider,
             log_body,
-            proxy,
         }
     }
 
@@ -169,11 +165,9 @@ impl<'a> StreamingResponseHandler<'a> {
     }
 
     /// Apply provider-specific transformation to stream chunk.
-    fn apply_provider_transform(&self, chunk: &mut ChatStreamChunk) {
-        if let Some(b_name) = self.provider_name {
-            if let Some(mut provider) = self.proxy.get_provider(b_name) {
-                provider.transform_stream_chunk(chunk);
-            }
+    fn apply_provider_transform(&mut self, chunk: &mut ChatStreamChunk) {
+        if let Some(ref mut provider) = self.provider {
+            provider.transform_stream_chunk(chunk);
         }
     }
 

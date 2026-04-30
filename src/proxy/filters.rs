@@ -453,15 +453,15 @@ impl ProxyHttp for CodexProxy {
                 // with converted Responses API events below (or empty if no events)
                 *body = Some(Bytes::new());
 
-                // Extract provider_name before mutable borrow to avoid borrow conflict
-                let provider_name = ctx.provider_name.clone();
+                // Get provider clone before mutable borrow to avoid borrow conflict
+                let provider = ctx.provider_name.as_ref()
+                    .and_then(|name| self.get_provider(name));
 
                 // Delegate to StreamingResponseHandler for chunk processing
                 let mut handler = StreamingResponseHandler::new(
                     ctx,
-                    provider_name.as_deref(),
+                    provider,
                     self.log_body,
-                    self,
                 );
 
                 // Process streaming frames until end_of_body
