@@ -126,24 +126,22 @@ impl RequestStats {
         }
 
         // Per-model counts
-        if let Some(ref model) = record.model {
-            if let Ok(mut counts) = self.model_counts.lock() {
+        if let Some(ref model) = record.model
+            && let Ok(mut counts) = self.model_counts.lock() {
                 counts
                     .entry(model.clone())
                     .or_insert_with(|| AtomicU64::new(0))
                     .fetch_add(1, Ordering::Relaxed);
             }
-        }
 
         // Per-backend counts
-        if !record.backend.is_empty() {
-            if let Ok(mut counts) = self.backend_counts.lock() {
+        if !record.backend.is_empty()
+            && let Ok(mut counts) = self.backend_counts.lock() {
                 counts
                     .entry(record.backend.clone())
                     .or_insert_with(|| AtomicU64::new(0))
                     .fetch_add(1, Ordering::Relaxed);
             }
-        }
 
         // Recent requests
         if let Ok(mut recent) = self.recent_requests.lock() {

@@ -1,4 +1,6 @@
 //! Proxy module for pingora integration.
+//!
+//! This module requires the `server` feature to be enabled.
 
 pub mod context;
 pub mod filters;

@@ -1,54 +1,85 @@
 [package]
 name = "codex-convert-proxy"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+
+[features]
+# Default = full library + server (standalone proxy binary)
+default = ["full"]
+
+# Core library features (for embedding in other projects)
+# Minimal: just providers + conversion. Add "config-lib" if BackendRouter is needed.
+lib = ["providers-lib"]
+
+# Providers module (trait + implementations)
+providers-lib = ["async-trait"]
+
+# Config module
+config-lib = ["url"]
+
+# Full library including server functionality and CLI
+full = ["lib", "config-lib", "server", "clap", "tracing-subscriber", "tracing-appender", "opentelemetry", "telemetry-lib"]
+
+# Server functionality (requires Pingora + logging)
+server = [
+    "lib",
+    "config-lib",
+    "pingora/lb",
+    "pingora/rustls",
+    "pingora-core/rustls",
+    "pingora-http",
+    "pingora-proxy/rustls",
+    "tracing-subscriber",
+    "tracing-appender",
+]
+
+# Binary/CLI support (implies server)
+# binary is an alias for full (they are functionally identical)
+binary = ["full"]
+
+# Telemetry module
+telemetry-lib = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
 
 [dependencies]
-# Web framework / proxy
-pingora = { version = "0.8", features = ["lb", "rustls"] }
-pingora-core = { version = "0.8", features = ["rustls"] }
-pingora-http = "0.8"
-pingora-proxy = { version = "0.8", features = ["rustls"] }
-
-# Serialization
+# Core (always available with lib or full)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# Async runtime
 tokio = { version = "1.0", features = ["full"] }
-
-# Error handling
 thiserror = "2.0"
 anyhow = "1.0"
-
-# Utilities
-uuid = { version = "1.0", features = ["v4"] }
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
 http = "1"
 http-body-util = "0.1.3"
 bytes = "1"
-url = "2.5"
-
-# String search optimization
+tracing = "0.1"
 memchr = "2.5"
 
 # HTTP client for manual upstream requests
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 
-# CLI
-clap = { version = "4", features = ["derive"] }
+# CLI (binary feature)
+clap = { version = "4", features = ["derive"], optional = true }
 
-# Logging - tracing ecosystem
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
+# Logging (binary feature)
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+tracing-appender = { version = "0.2", optional = true }
 
-# OpenTelemetry integration
-opentelemetry = { version = "0.31", features = ["trace", "metrics"] }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.31"
-tracing-opentelemetry = "0.32"
+# OpenTelemetry integration (telemetry-lib feature)
+opentelemetry = { version = "0.31", features = ["trace", "metrics"], optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.31", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+
+# Pingora (server feature)
+pingora = { version = "0.8", optional = true }
+pingora-core = { version = "0.8", optional = true }
+pingora-http = { version = "0.8", optional = true }
+pingora-proxy = { version = "0.8", optional = true }
+
+# Utilities
+uuid = { version = "1.0", features = ["v4"] }
+async-trait = { version = "0.1", optional = true }
+chrono = { version = "0.4", features = ["serde"] }
+url = { version = "2.5", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

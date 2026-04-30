@@ -30,27 +30,27 @@ pub fn chat_to_response_with_context(
         .map(|annotations| {
             annotations
                 .iter()
-                .filter_map(|anno| match anno {
+                .map(|anno| match anno {
                     ChatMessageAnnotation::UrlCitation {
                         start_index,
                         end_index,
                         url,
                         title,
-                    } => Some(ResponseAnnotation::UrlCitation {
+                    } => ResponseAnnotation::UrlCitation {
                         start_index: *start_index,
                         end_index: *end_index,
                         url: url.clone(),
                         title: title.clone(),
-                    }),
+                    },
                     ChatMessageAnnotation::FileCitation {
                         index,
                         file_id,
                         filename,
-                    } => Some(ResponseAnnotation::FileCitation {
+                    } => ResponseAnnotation::FileCitation {
                         index: *index,
                         file_id: file_id.clone(),
                         filename: filename.clone(),
-                    }),
+                    },
                 })
                 .collect::<Vec<_>>()
         })
@@ -64,8 +64,8 @@ pub fn chat_to_response_with_context(
         let (actual_content, reasoning) = parse_thought_tags(&content);
 
         // Add reasoning output if present
-        if let Some(ref reasoning_text) = reasoning {
-            if !reasoning_text.is_empty() {
+        if let Some(ref reasoning_text) = reasoning
+            && !reasoning_text.is_empty() {
                 outputs.push(ResponseOutputItem {
                     id: format!("reasoning_{}", chat_resp.id),
                     item_type: OutputItemType::Reasoning,
@@ -82,7 +82,6 @@ pub fn chat_to_response_with_context(
                     results: None,
                 });
             }
-        }
 
         // Add text output if present (after stripping thinking tags)
         if !actual_content.is_empty() {

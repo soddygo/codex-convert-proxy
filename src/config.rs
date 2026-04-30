@@ -159,15 +159,14 @@ impl BackendRouter {
     pub fn select(&self, path: &str, headers: &[(String, String)]) -> Option<&BackendInfo> {
         for (config, info) in &self.backends {
             // Check path prefix match
-            if let Some(ref prefix) = config.match_rules.path_prefix {
-                if Self::path_matches_prefix(path, prefix) {
+            if let Some(ref prefix) = config.match_rules.path_prefix
+                && Self::path_matches_prefix(path, prefix) {
                     debug!(
                         "Path '{}' matched backend '{}' (prefix: {})",
                         path, config.name, prefix
                     );
                     return Some(info);
                 }
-            }
 
             // Check header match
             if let Some(ref header_match) = config.match_rules.header {
@@ -227,11 +226,10 @@ impl BackendRouter {
     ) -> Option<(&BackendConfig, &BackendInfo)> {
         for (config, info) in &self.backends {
             // Check path prefix
-            if let Some(ref prefix) = config.match_rules.path_prefix {
-                if Self::path_matches_prefix(path, prefix) {
+            if let Some(ref prefix) = config.match_rules.path_prefix
+                && Self::path_matches_prefix(path, prefix) {
                     return Some((config, info));
                 }
-            }
 
             // Check header match
             if let Some(ref header_match) = config.match_rules.header {

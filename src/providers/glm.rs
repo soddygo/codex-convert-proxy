@@ -13,6 +13,12 @@ use std::any::Any;
 /// - API path is /chat/completions (not /v1/chat/completions)
 pub struct GLMProvider;
 
+impl Default for GLMProvider {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl GLMProvider {
     pub fn new() -> Self {
         Self
@@ -29,7 +35,7 @@ impl Provider for GLMProvider {
         "/chat/completions".to_string()
     }
 
-    fn transform_request(&mut self, request: &mut ChatRequest) {
+    fn transform_request(&self, request: &mut ChatRequest) {
         // GLM doesn't support tools - remove them
         request.tools = None;
         request.tool_choice = None;
@@ -45,7 +51,7 @@ impl Provider for GLMProvider {
         }
     }
 
-    fn transform_response(&mut self, response: &mut ChatResponse) {
+    fn transform_response(&self, response: &mut ChatResponse) {
         // Ensure content is string format
         for choice in &mut response.choices {
             let text = choice.message.content.as_text();
@@ -53,17 +59,16 @@ impl Provider for GLMProvider {
         }
     }
 
-    fn transform_stream_chunk(&mut self, chunk: &mut ChatStreamChunk) {
+    fn transform_stream_chunk(&self, chunk: &mut ChatStreamChunk) {
         // Ensure delta content is string format
         for choice in &mut chunk.choices {
-            if let Some(delta) = &mut choice.delta {
-                if let Some(content) = &delta.content {
+            if let Some(delta) = &mut choice.delta
+                && let Some(content) = &delta.content {
                     let text = content.as_text();
                     if !text.is_empty() {
                         delta.content = Some(crate::types::chat_api::Content::String(text));
                     }
                 }
-            }
         }
     }
 
@@ -113,7 +118,7 @@ mod tests {
             service_tier: None,
         };
 
-        let mut provider = GLMProvider;
+        let provider = GLMProvider;
         provider.transform_request(&mut request);
 
         assert!(request.tools.is_none());
@@ -156,7 +161,7 @@ mod tests {
             service_tier: None,
         };
 
-        let mut provider = GLMProvider;
+        let provider = GLMProvider;
         provider.transform_request(&mut request);
 
         let msg = request.messages.first().unwrap();

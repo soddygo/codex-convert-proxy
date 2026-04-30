@@ -265,8 +265,8 @@ impl ProxyHttp for CodexProxy {
                 let backend_name = ctx.selected_backend.as_ref().map(|b| b.name.clone());
 
                 // Parse and convert request
-                if let (Some(b_name), Some(_backend)) = (backend_name.as_ref(), ctx.selected_backend.as_ref()) {
-                    if let Some(mut provider) = self.get_provider(b_name) {
+                if let (Some(b_name), Some(_backend)) = (backend_name.as_ref(), ctx.selected_backend.as_ref())
+                    && let Some(provider) = self.get_provider(b_name) {
                         // Get model override from backend config (extract value before mutable borrow)
                         let model_override = ctx.selected_backend.as_ref()
                             .and_then(|b| b.model.as_deref())
@@ -278,7 +278,7 @@ impl ProxyHttp for CodexProxy {
                                 // Set context before converting (needs mutable ctx)
                                 ctx.set_response_request_context(context);
                                 // Convert using provider (model_override is now an owned String)
-                                match response_to_chat(response_req, provider.as_mut(), model_override.as_deref()) {
+                                match response_to_chat(response_req, provider.as_ref(), model_override.as_deref()) {
                                     Ok(chat_req) => {
                                         // Serialize ChatRequest as JSON
                                         match serde_json::to_vec(&chat_req) {
@@ -324,7 +324,6 @@ impl ProxyHttp for CodexProxy {
                             }
                         }
                     }
-                }
 
                 // Parse model name from original request for logging
                 ctx.init_from_request_body();
@@ -487,9 +486,9 @@ impl ProxyHttp for CodexProxy {
             let duration_ms = ctx.start_time.elapsed().as_millis() as u64;
 
             // For non-streaming conversion responses, convert the full body
-            if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty() {
-                if let Ok(text) = std::str::from_utf8(&ctx.response_body) {
-                    if let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
+            if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty()
+                && let Ok(text) = std::str::from_utf8(&ctx.response_body)
+                    && let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
                         // Get context from stream_state (set during request_body_filter)
                         let request_context = ctx.stream_state.as_ref()
                             .and_then(|s| s.request_context.as_ref());
@@ -510,8 +509,6 @@ impl ProxyHttp for CodexProxy {
                             }
                         }
                     }
-                }
-            }
 
             info!(
                 "[DONE] provider={}, model={:?}, duration={}ms",

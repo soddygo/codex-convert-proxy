@@ -124,8 +124,8 @@ impl<'a> StreamingResponseHandler<'a> {
     pub fn finalize_stream(&mut self) -> Vec<String> {
         let mut converted_chunks: Vec<String> = Vec::new();
 
-        if let Some(ref mut state) = self.ctx.stream_state {
-            if !state.is_completed {
+        if let Some(ref mut state) = self.ctx.stream_state
+            && !state.is_completed {
                 if self.ctx.stream_chunks_parsed == 0 {
                     warn!(
                         "[STREAM_COMPLETE_SKIP] skip response.completed because no valid upstream chunks were parsed (status={:?}, content_type={:?})",
@@ -144,11 +144,10 @@ impl<'a> StreamingResponseHandler<'a> {
                         state.completed_tool_calls.len(),
                         self.ctx.stream_chunks_parsed
                     );
-                    if self.log_body {
-                        if let Ok(json) = serde_json::to_string(&response_obj) {
+                    if self.log_body
+                        && let Ok(json) = serde_json::to_string(&response_obj) {
                             debug!("[STREAM_COMPLETE_JSON] {}", json);
                         }
-                    }
                     let completed_event = ResponseStreamEvent::Completed {
                         response: response_obj,
                     };
@@ -159,14 +158,13 @@ impl<'a> StreamingResponseHandler<'a> {
                     state.is_completed = true;
                 }
             }
-        }
 
         converted_chunks
     }
 
     /// Apply provider-specific transformation to stream chunk.
     fn apply_provider_transform(&mut self, chunk: &mut ChatStreamChunk) {
-        if let Some(ref mut provider) = self.provider {
+        if let Some(ref provider) = self.provider {
             provider.transform_stream_chunk(chunk);
         }
     }

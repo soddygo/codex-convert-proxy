@@ -12,6 +12,12 @@ use std::any::Any;
 /// - Does not support 'developer' role, convert to 'user'
 pub struct MiniMaxProvider;
 
+impl Default for MiniMaxProvider {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl MiniMaxProvider {
     pub fn new() -> Self {
         Self
@@ -28,7 +34,7 @@ impl Provider for MiniMaxProvider {
         "/chat/completions".to_string()
     }
 
-    fn transform_request(&mut self, request: &mut ChatRequest) {
+    fn transform_request(&self, request: &mut ChatRequest) {
         // MiniMax requires content to be a string, not an array
         for message in &mut request.messages {
             if matches!(message.content, Content::Array(_)) {
@@ -42,7 +48,7 @@ impl Provider for MiniMaxProvider {
         }
     }
 
-    fn transform_response(&mut self, response: &mut ChatResponse) {
+    fn transform_response(&self, response: &mut ChatResponse) {
         // Ensure content is string
         for choice in &mut response.choices {
             if matches!(choice.message.content, Content::Array(_)) {
@@ -52,19 +58,17 @@ impl Provider for MiniMaxProvider {
         }
     }
 
-    fn transform_stream_chunk(&mut self, chunk: &mut ChatStreamChunk) {
+    fn transform_stream_chunk(&self, chunk: &mut ChatStreamChunk) {
         // Ensure delta content is string
         for choice in &mut chunk.choices {
-            if let Some(delta) = &mut choice.delta {
-                if matches!(delta.content, Some(Content::Array(_))) {
-                    if let Some(content) = delta.content.take() {
+            if let Some(delta) = &mut choice.delta
+                && matches!(delta.content, Some(Content::Array(_)))
+                    && let Some(content) = delta.content.take() {
                         let text = content.as_text();
                         if !text.is_empty() {
                             delta.content = Some(Content::String(text));
                         }
                     }
-                }
-            }
         }
     }
 
@@ -118,7 +122,7 @@ mod tests {
             service_tier: None,
         };
 
-        let mut provider = MiniMaxProvider;
+        let provider = MiniMaxProvider;
         provider.transform_request(&mut request);
 
         let msg = request.messages.first().unwrap();

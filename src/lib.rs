@@ -9,29 +9,26 @@
 //! (GLM, Kimi, DeepSeek, MiniMax) only support the Chat Completions API.
 //! This library provides bidirectional conversion between these formats.
 //!
-//! # Usage
+//! # Features
+//!
+//! - `providers-lib`: Provider trait + implementations + conversion functions (minimal embedding)
+//! - `config-lib`: BackendRouter and config types (optional, for standalone proxy)
+//! - `lib`: Alias for `providers-lib`
+//! - `full` (default): Full library including server functionality and CLI
+//! - `server`: Pingora-based proxy server (implies `lib` + `config-lib`)
+//! - `binary`: CLI binary support (alias for `full`)
+//!
+//! # Usage (as library)
 //!
 //! ```ignore
-//! use codex_convert_proxy::{response_to_chat, chat_to_response};
-//! use codex_convert_proxy::providers::{GLMProvider, Provider};
-//! use codex_convert_proxy::types::response_api::{ResponseRequest, InputItemOrString};
-//!
-//! // Create a Responses API request
-//! let response_req = ResponseRequest {
-//!     model: "glm-4".to_string(),
-//!     input: InputItemOrString::String("Hello".to_string()),
-//!     instructions: Some("You are a helpful assistant.".to_string()),
-//!     tools: vec![],
-//!     tool_choice: Default::default(),
-//!     stream: false,
-//!     temperature: None,
-//!     max_tokens: None,
-//!     top_p: None,
-//!     user: None,
+//! use codex_convert_proxy::{
+//!     response_to_chat, chat_to_response, chat_to_response_with_context,
+//!     chat_chunk_to_response_events, event_to_sse,
+//!     Provider, GLMProvider, create_provider,
+//!     StreamState, ResponseRequestContext, ResponseStreamEvent,
+//!     types::response_api::{ResponseRequest, InputItemOrString},
+//!     util::parse_sse,
 //! };
-//!
-//! // Convert Responses API request to Chat API request
-//! let chat_req = response_to_chat(response_req, &GLMProvider).unwrap();
 //! ```
 //!
 //! # Providers
@@ -44,41 +41,73 @@
 //! - [`DeepSeekProvider`] - For DeepSeek models
 //! - [`MiniMaxProvider`] - For MiniMax models
 
-pub mod cli;
-pub mod config;
+// Core modules (always available)
 pub mod constants;
-pub mod convert;
 pub mod error;
-pub mod logger;
-pub mod proxy;
-pub mod providers;
-pub mod server;
 pub mod stats;
-pub mod telemetry;
 pub mod types;
 pub mod util;
+
+// Conversion modules (require providers-lib for Provider trait)
+#[cfg(feature = "providers-lib")]
+pub mod convert;
 
 // Re-export main types
 pub use error::{ConversionError, ProxyError};
 pub use types::*;
 
-// Re-export convert functions
-pub use convert::{response_to_chat, chat_to_response, chat_chunk_to_response_events, event_to_sse};
+// Re-export convert functions (requires providers-lib)
+#[cfg(feature = "providers-lib")]
+pub use convert::{
+    chat_chunk_to_response_events, chat_to_response, chat_to_response_with_context,
+    event_to_sse, response_to_chat,
+};
 
-// Re-export providers
-pub use providers::{Provider, GLMProvider, KimiProvider, DeepSeekProvider, MiniMaxProvider, create_provider};
-
-// Re-export proxy
-pub use proxy::CodexProxy;
-
-// Re-export config
-pub use config::{BackendConfig, BackendInfo, BackendRouter, ProxyConfig};
+// Re-export streaming types for library consumers
+#[cfg(feature = "providers-lib")]
+pub use convert::streaming::{ResponseRequestContext, ResponseStreamEvent, StreamState};
 
 // Re-export stats
 pub use stats::{RequestRecord, RequestStats, StatsSummary, TokenUsage};
 
-// Re-export CLI
+// Providers module (providers-lib feature)
+#[cfg(feature = "providers-lib")]
+pub mod providers;
+
+#[cfg(feature = "providers-lib")]
+pub use providers::{create_provider, DeepSeekProvider, GLMProvider, KimiProvider, MiniMaxProvider, Provider};
+
+// Config module (config-lib feature - optional for standalone proxy)
+#[cfg(feature = "config-lib")]
+pub mod config;
+
+#[cfg(feature = "config-lib")]
+pub use config::{BackendConfig, BackendInfo, BackendRouter, ProxyConfig};
+
+// Server functionality (server feature - Pingora proxy)
+#[cfg(feature = "server")]
+pub mod proxy;
+
+#[cfg(feature = "server")]
+pub mod server;
+
+#[cfg(feature = "server")]
+pub use proxy::CodexProxy;
+
+// CLI binary support (full feature implies binary)
+#[cfg(feature = "full")]
+pub mod cli;
+
+#[cfg(feature = "full")]
 pub use cli::{Cli, Commands, StartArgs};
 
-// Re-export telemetry
+// Logging (server/binary feature - requires tracing-subscriber and tracing-appender)
+#[cfg(feature = "server")]
+pub mod logger;
+
+// Telemetry (telemetry-lib feature)
+#[cfg(feature = "telemetry-lib")]
+pub mod telemetry;
+
+#[cfg(feature = "telemetry-lib")]
 pub use telemetry::TelemetryConfig;

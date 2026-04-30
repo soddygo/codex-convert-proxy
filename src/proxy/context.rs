@@ -75,8 +75,8 @@ impl ProxyContext {
         if self.model.is_some() {
             return;
         }
-        if let Ok(text) = std::str::from_utf8(&self.request_body) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Ok(text) = std::str::from_utf8(&self.request_body)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
                 if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
                     self.model = Some(model.to_string());
                 }
@@ -102,7 +102,6 @@ impl ProxyContext {
                     ));
                 }
             }
-        }
     }
 
     /// Set the response request context from a parsed ResponseRequest.

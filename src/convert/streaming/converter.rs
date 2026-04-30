@@ -46,8 +46,8 @@ pub fn chat_chunk_to_response_events(
                 delta.tool_calls.as_ref().map(|tc| tc.len()),
                 delta.reasoning_content.as_ref().map(|r| r.len()));
             // Handle reasoning content (GLM extension)
-            if let Some(reasoning) = &delta.reasoning_content {
-                if !reasoning.is_empty() {
+            if let Some(reasoning) = &delta.reasoning_content
+                && !reasoning.is_empty() {
                     if !state.is_reasoning_added {
                         let reasoning_id = format!("reasoning_{}", id);
                         let reasoning_idx = state.next_output_index;
@@ -68,7 +68,6 @@ pub fn chat_chunk_to_response_events(
                     });
                     state.reasoning_text.push_str(reasoning);
                 }
-            }
 
             // Handle text content
             if let Some(content) = &delta.content {
@@ -90,8 +89,8 @@ pub fn chat_chunk_to_response_events(
                     state.is_thinking = new_is_thinking;
 
                     // Emit reasoning events if we have reasoning content
-                    if let Some(reasoning) = reasoning_delta {
-                        if !reasoning.is_empty() {
+                    if let Some(reasoning) = reasoning_delta
+                        && !reasoning.is_empty() {
                             if !state.is_reasoning_added {
                                 let reasoning_id = format!("reasoning_{}", id);
                                 let reasoning_idx = state.next_output_index;
@@ -112,7 +111,6 @@ pub fn chat_chunk_to_response_events(
                             });
                             state.reasoning_text.push_str(&reasoning);
                         }
-                    }
 
                     // Emit text events if we have actual content
                     if !sanitized_actual_text.is_empty() {
@@ -227,11 +225,10 @@ pub fn chat_chunk_to_response_events(
                                 });
                             }
                         }
-                        if let Some(name) = &tc.function.name {
-                            if !name.is_empty() && tc_state.name.is_empty() {
+                        if let Some(name) = &tc.function.name
+                            && !name.is_empty() && tc_state.name.is_empty() {
                                 tc_state.name = name.clone();
                             }
-                        }
                     }
                 }
             }

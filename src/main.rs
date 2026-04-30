@@ -1,6 +1,8 @@
 //! Codex Convert Proxy - Main Entry Point
 //!
 //! A proxy server that converts between OpenAI Responses API and Chat API.
+//!
+//! This binary requires the `binary` feature to be enabled.
 
 use std::collections::HashMap;
 use std::sync::Arc;

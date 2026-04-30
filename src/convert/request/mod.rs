@@ -16,7 +16,7 @@ use tracing::debug;
 /// Convert a Responses API request to a Chat API request.
 pub fn response_to_chat(
     response_req: ResponseRequest,
-    provider: &mut dyn Provider,
+    provider: &dyn Provider,
     model_override: Option<&str>,
 ) -> Result<ChatRequest, ConversionError> {
     let enforce_tool_result_adjacency = provider.name() == "minimax";
@@ -62,11 +62,10 @@ pub fn response_to_chat(
     };
 
     // Apply min_tokens floor validation (some providers reject max_tokens < MIN_MAX_TOKENS)
-    if let Some(max_tokens) = chat_req.max_tokens {
-        if max_tokens < MIN_MAX_TOKENS {
+    if let Some(max_tokens) = chat_req.max_tokens
+        && max_tokens < MIN_MAX_TOKENS {
             chat_req.max_tokens = Some(MIN_MAX_TOKENS);
         }
-    }
 
     provider.transform_request(&mut chat_req);
 
@@ -120,8 +119,8 @@ mod tests {
         let mut request = make_request(InputItemOrString::String("Hello".to_string()));
         request.instructions = Some("You are a helpful assistant.".to_string());
 
-        let mut provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
 
         let first = chat_req.messages.first().unwrap();
         assert_eq!(first.role, MessageRole::System);
@@ -145,8 +144,8 @@ mod tests {
             output: None,
         }]));
 
-        let mut provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
 
         let msg = chat_req.messages.first().unwrap();
         assert_eq!(msg.role, MessageRole::Assistant);
@@ -182,8 +181,8 @@ mod tests {
             },
         ]));
 
-        let mut provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
 
@@ -210,8 +209,8 @@ mod tests {
             output: Some("sunny".to_string()),
         }]));
 
-        let mut provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
         assert_eq!(chat_req.messages.len(), 2);
 
         let assistant = &chat_req.messages[0];
@@ -265,8 +264,8 @@ mod tests {
             },
         ]));
 
-        let mut provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
         let assistant = &chat_req.messages[0];
@@ -320,8 +319,8 @@ mod tests {
             },
         ]));
 
-        let mut provider = GLMProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = GLMProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
         assert_eq!(chat_req.messages.len(), 3);
         assert_eq!(chat_req.messages[0].role, MessageRole::Assistant);
         assert!(chat_req.messages[0].tool_calls.is_some());
@@ -334,8 +333,8 @@ mod tests {
         let mut request = make_request(InputItemOrString::String("Hello".to_string()));
         request.max_output_tokens = Some(8);
 
-        let mut provider = GLMProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = GLMProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
         assert_eq!(chat_req.max_tokens, Some(16));
     }
 
@@ -351,8 +350,8 @@ mod tests {
             extra: HashMap::new(),
         }];
 
-        let mut provider = crate::providers::kimi::KimiProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = crate::providers::kimi::KimiProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
         let tools = chat_req.tools.unwrap_or_default();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_type, "function");
@@ -380,8 +379,8 @@ mod tests {
             output: None,
         }]));
 
-        let mut provider = GLMProvider;
-        let chat_req = response_to_chat(request, &mut provider, None).unwrap();
+        let provider = GLMProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
         assert!(!chat_req.messages.is_empty());
         let body = chat_req.messages[0].content.as_text();
         assert!(body.contains("[input_file]"));

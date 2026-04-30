@@ -189,31 +189,31 @@ pub fn parse_streaming_thinking(
                 (Some(open_pos), Some(thought_open_pos)) => {
                     if open_pos <= thought_open_pos {
                         let content = std::str::from_utf8(&bytes[pos..pos + open_pos]).unwrap_or("");
-                        actual_text.push_str(&content);
+                        actual_text.push_str(content);
                         pos += open_pos + 7;
                         current_is_thinking = true;
                     } else {
                         let content = std::str::from_utf8(&bytes[pos..pos + thought_open_pos]).unwrap_or("");
-                        actual_text.push_str(&content);
+                        actual_text.push_str(content);
                         pos += thought_open_pos + 9;
                         current_is_thinking = true;
                     }
                 }
                 (Some(open_pos), None) => {
                     let content = std::str::from_utf8(&bytes[pos..pos + open_pos]).unwrap_or("");
-                    actual_text.push_str(&content);
+                    actual_text.push_str(content);
                     pos += open_pos + 7;
                     current_is_thinking = true;
                 }
                 (None, Some(thought_open_pos)) => {
                     let content = std::str::from_utf8(&bytes[pos..pos + thought_open_pos]).unwrap_or("");
-                    actual_text.push_str(&content);
+                    actual_text.push_str(content);
                     pos += thought_open_pos + 9;
                     current_is_thinking = true;
                 }
                 (None, None) => {
                     let remaining = std::str::from_utf8(&bytes[pos..]).unwrap_or("");
-                    actual_text.push_str(&remaining);
+                    actual_text.push_str(remaining);
                     break;
                 }
             }
