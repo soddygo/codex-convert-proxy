@@ -10,8 +10,36 @@ use crate::constants::MIN_MAX_TOKENS;
 use crate::error::ConversionError;
 use crate::providers::Provider;
 use crate::types::chat_api::{ChatRequest, StreamOptions};
-use crate::types::response_api::ResponseRequest;
+use crate::types::response_api::{ResponseRequest, ResponseTextConfig};
 use tracing::debug;
+
+fn to_chat_response_format(text: Option<&ResponseTextConfig>) -> Option<serde_json::Value> {
+    let format = text.and_then(|t| t.format.as_ref())?;
+    match format.format_type.as_str() {
+        "json_schema" => {
+            let mut json_schema = serde_json::json!({
+                "name": format.name.clone().unwrap_or_else(|| "response_schema".to_string()),
+                "schema": format.schema.clone().unwrap_or_else(|| serde_json::json!({})),
+            });
+            if let Some(strict) = format.strict {
+                json_schema["strict"] = serde_json::json!(strict);
+            }
+            Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": json_schema
+            }))
+        }
+        "json_object" => Some(serde_json::json!({
+            "type": "json_object"
+        })),
+        "text" => Some(serde_json::json!({
+            "type": "text"
+        })),
+        other => Some(serde_json::json!({
+            "type": other
+        })),
+    }
+}
 
 /// Convert a Responses API request to a Chat API request.
 pub fn response_to_chat(
@@ -56,7 +84,9 @@ pub fn response_to_chat(
         top_logprobs: None,
         n: None,
         stop: None,
-        response_format: None,
+        response_format: to_chat_response_format(response_req.text.as_ref()),
+        reasoning_effort: response_req.reasoning.as_ref().and_then(|r| r.effort.clone()),
+        parallel_tool_calls: response_req.parallel_tool_calls,
         seed: None,
         service_tier: None,
     };
@@ -87,7 +117,8 @@ mod tests {
     use crate::providers::glm::GLMProvider;
     use crate::types::chat_api::MessageRole;
     use crate::types::response_api::{
-        Content as ResponseContent, InputItem, InputItemOrString, InputItemType, ResponseRequest,
+        Content as ResponseContent, InputItem, InputItemOrString, InputItemType, ResponseReasoning,
+        ResponseRequest, ResponseTextConfig, ResponseTextFormat,
         Tool, ToolChoice as ResponseToolChoice, ToolType,
     };
 
@@ -385,5 +416,45 @@ mod tests {
         let body = chat_req.messages[0].content.as_text();
         assert!(body.contains("[input_file]"));
         assert!(body.contains("file.pdf"));
+    }
+
+    #[test]
+    fn test_text_format_maps_to_chat_response_format() {
+        let mut request = make_request(InputItemOrString::String("Hello".to_string()));
+        request.text = Some(ResponseTextConfig {
+            format: Some(ResponseTextFormat {
+                format_type: "json_schema".to_string(),
+                name: Some("AnswerSchema".to_string()),
+                schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": { "type": "string" }
+                    }
+                })),
+                strict: Some(true),
+            }),
+        });
+
+        let provider = GLMProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let response_format = chat_req.response_format.expect("response_format should be mapped");
+        assert_eq!(response_format["type"], "json_schema");
+        assert_eq!(response_format["json_schema"]["name"], "AnswerSchema");
+        assert_eq!(response_format["json_schema"]["strict"], true);
+    }
+
+    #[test]
+    fn test_reasoning_effort_and_parallel_tool_calls_mapped() {
+        let mut request = make_request(InputItemOrString::String("Hello".to_string()));
+        request.reasoning = Some(ResponseReasoning {
+            effort: Some("high".to_string()),
+            summary: None,
+        });
+        request.parallel_tool_calls = Some(false);
+
+        let provider = GLMProvider;
+        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        assert_eq!(chat_req.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(chat_req.parallel_tool_calls, Some(false));
     }
 }

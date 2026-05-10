@@ -44,6 +44,12 @@ pub struct StreamState {
     pub reasoning_output_index: Option<u32>,
     /// Original Responses request fields for protocol-consistent events.
     pub request_context: Option<ResponseRequestContext>,
+    /// Final response status derived from finish_reason.
+    pub final_status: String,
+    /// Optional incomplete reason when final_status is incomplete.
+    pub incomplete_reason: Option<String>,
+    /// Refusal text accumulated from streaming deltas.
+    pub refusal_text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +165,9 @@ impl StreamState {
             text_output_index: None,
             reasoning_output_index: None,
             request_context,
+            final_status: "completed".to_string(),
+            incomplete_reason: None,
+            refusal_text: String::new(),
         }
     }
 
@@ -210,16 +219,25 @@ impl StreamState {
             });
         }
 
-        // Add text output if present
-        if self.is_output_item_added && !self.full_text.is_empty() {
+        // Add assistant message output (text and/or refusal)
+        if self.is_output_item_added && (!self.full_text.is_empty() || !self.refusal_text.is_empty()) {
+            let mut content_parts = Vec::new();
+            if !self.full_text.is_empty() {
+                content_parts.push(ResponseContentPart::OutputText {
+                    text: self.full_text.clone(),
+                    annotations: vec![],
+                });
+            }
+            if !self.refusal_text.is_empty() {
+                content_parts.push(ResponseContentPart::Refusal {
+                    refusal: self.refusal_text.clone(),
+                });
+            }
             output.push(ResponseOutputItem {
                 id: self.output_id.clone(),
                 item_type: OutputItemType::Message,
                 status: Some("completed".to_string()),
-                content: Some(vec![ResponseContentPart::OutputText {
-                    text: self.full_text.clone(),
-                    annotations: vec![],
-                }]),
+                content: Some(content_parts),
                 role: Some("assistant".to_string()),
                 name: None,
                 arguments: None,
@@ -270,12 +288,15 @@ impl StreamState {
         Box::new(ResponseObject {
             id: self.response_id.clone(),
             object: "response".to_string(),
-            status: "completed".to_string(),
+            status: self.final_status.clone(),
             model: self.model.clone(),
             created_at: Utc::now().timestamp(),
             completed_at: Some(Utc::now().timestamp()),
             error: None,
-            incomplete_details: None,
+            incomplete_details: self
+                .incomplete_reason
+                .as_ref()
+                .map(|reason| serde_json::json!({ "reason": reason })),
             instructions: self
                 .request_context
                 .as_ref()
@@ -318,6 +339,9 @@ impl StreamState {
                     Some(ResponseTextConfig {
                         format: Some(ResponseTextFormat {
                             format_type: "text".to_string(),
+                            name: None,
+                            schema: None,
+                            strict: None,
                         }),
                     })
                 }),

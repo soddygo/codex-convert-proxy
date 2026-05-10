@@ -25,6 +25,8 @@ pub fn convert_input_to_messages(
             annotations: None,
             tool_calls: None,
             tool_call_id: None,
+                function_call: None,
+                refusal: None,
         });
     }
 
@@ -38,6 +40,8 @@ pub fn convert_input_to_messages(
                 annotations: None,
                 tool_calls: None,
                 tool_call_id: None,
+                function_call: None,
+                refusal: None,
             });
         }
         InputItemOrString::Array(items) => {
@@ -76,6 +80,8 @@ pub fn convert_input_to_messages(
                                     annotations: None,
                                     tool_calls: Some(tool_calls),
                                     tool_call_id: item.call_id,
+                                    function_call: None,
+                                    refusal: None,
                                 });
                                 tracing::debug!(
                                     "[REQUEST_CONVERT] merged assistant message with pending tool_calls to keep tool result adjacency"
@@ -95,6 +101,8 @@ pub fn convert_input_to_messages(
                                 annotations: None,
                                 tool_calls: Some(tool_calls),
                                 tool_call_id: None,
+                                function_call: None,
+                                refusal: None,
                             });
                         }
 
@@ -105,6 +113,8 @@ pub fn convert_input_to_messages(
                             annotations: None,
                             tool_calls: None,
                             tool_call_id: item.call_id,
+                            function_call: None,
+                            refusal: None,
                         });
                     }
                     crate::types::response_api::InputItemType::FunctionCall => {
@@ -148,6 +158,8 @@ pub fn convert_input_to_messages(
                                 annotations: None,
                                 tool_calls: Some(tool_calls),
                                 tool_call_id: None,
+                                function_call: None,
+                                refusal: None,
                             });
                         }
 
@@ -175,6 +187,8 @@ pub fn convert_input_to_messages(
                                 annotations: None,
                                 tool_calls: Some(vec![synthetic_tool_call]),
                                 tool_call_id: None,
+                                function_call: None,
+                                refusal: None,
                             });
                             emitted_tool_call_ids.insert(call_id.clone());
                         }
@@ -186,6 +200,8 @@ pub fn convert_input_to_messages(
                             annotations: None,
                             tool_calls: None,
                             tool_call_id: Some(call_id.clone()),
+                            function_call: None,
+                            refusal: None,
                         });
                         tracing::debug!(
                             "[REQUEST_CONVERT] emitted tool result message (call_id={}, name={})",
@@ -209,6 +225,8 @@ pub fn convert_input_to_messages(
                     annotations: None,
                     tool_calls: Some(tool_calls),
                     tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
                 });
             }
             tracing::debug!(

@@ -134,6 +134,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             name,
             arguments,
             text,
+            refusal,
         } => {
             let mut item = serde_json::Map::new();
             item.insert("id".to_string(), serde_json::json!(item_id));
@@ -151,15 +152,22 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             if let Some(args) = arguments {
                 item.insert("arguments".to_string(), serde_json::json!(args));
             }
+            let mut content_parts = Vec::new();
             if let Some(body_text) = text {
-                item.insert(
-                    "content".to_string(),
-                    serde_json::json!([{
-                        "type": "output_text",
-                        "text": body_text,
-                        "annotations": [],
-                    }]),
-                );
+                content_parts.push(serde_json::json!({
+                    "type": "output_text",
+                    "text": body_text,
+                    "annotations": [],
+                }));
+            }
+            if let Some(refusal_text) = refusal {
+                content_parts.push(serde_json::json!({
+                    "type": "refusal",
+                    "refusal": refusal_text,
+                }));
+            }
+            if !content_parts.is_empty() {
+                item.insert("content".to_string(), serde_json::Value::Array(content_parts));
             }
             sse_event(
                 "response.output_item.done",
@@ -233,13 +241,14 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                 }),
             )
         }
-        ResponseStreamEvent::FunctionCallArgumentsDelta { output_index, item_id, delta } => {
+        ResponseStreamEvent::FunctionCallArgumentsDelta { output_index, item_id, call_id, delta } => {
             sse_event(
                 "response.function_call_arguments.delta",
                 serde_json::json!({
                     "type": "response.function_call_arguments.delta",
                     "output_index": output_index,
                     "item_id": item_id,
+                    "call_id": call_id,
                     "delta": delta,
                 }),
             )
@@ -403,6 +412,25 @@ mod tests {
         let sse = event_to_sse(&event);
         assert!(sse.contains("event: response.output_text.done"));
         assert!(sse.contains(r#""text":"hello""#));
+    }
+
+    #[test]
+    fn test_output_item_done_includes_refusal_content_part() {
+        let event = ResponseStreamEvent::OutputItemDone {
+            output_index: 0,
+            item_id: "msg_ref".to_string(),
+            item_type: "message".to_string(),
+            role: Some("assistant".to_string()),
+            call_id: None,
+            name: None,
+            arguments: None,
+            text: None,
+            refusal: Some("Not allowed".to_string()),
+        };
+        let sse = event_to_sse(&event);
+        assert!(sse.contains("event: response.output_item.done"));
+        assert!(sse.contains(r#""type":"refusal""#));
+        assert!(sse.contains(r#""refusal":"Not allowed""#));
     }
 
     #[test]

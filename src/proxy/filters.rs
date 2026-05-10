@@ -14,11 +14,44 @@ use tracing::{debug, error, info, warn};
 
 use crate::constants::*;
 use crate::convert::{ResponseRequestContext, response_to_chat};
+use crate::proxy::context_store::ConversationSnapshot;
+use crate::types::chat_api::{ChatMessage, MessageRole};
 use crate::types::response_api::ResponseRequest;
 
 use super::context::ProxyContext;
 use super::core::CodexProxy;
 use crate::proxy::streaming_handler::StreamingResponseHandler;
+
+fn merge_history_messages(
+    mut history: Vec<ChatMessage>,
+    current_turn_messages: Vec<ChatMessage>,
+) -> Vec<ChatMessage> {
+    // prefer-previous strategy:
+    // history from previous_response_id is authoritative; only append incremental suffix.
+    let mut overlap = 0usize;
+    while overlap < history.len() && overlap < current_turn_messages.len() {
+        let same = serde_json::to_value(&history[overlap]).ok()
+            == serde_json::to_value(&current_turn_messages[overlap]).ok();
+        if !same {
+            break;
+        }
+        overlap += 1;
+    }
+
+    if overlap > 0 {
+        debug!(
+            "[REQUEST_CONVERT] detected {} overlapping history messages, appending incremental suffix only",
+            overlap
+        );
+    } else if !current_turn_messages.is_empty() {
+        debug!(
+            "[REQUEST_CONVERT] no overlap with cached history, appending all current messages as incremental"
+        );
+    }
+
+    history.extend(current_turn_messages.into_iter().skip(overlap));
+    history
+}
 
 #[async_trait]
 impl ProxyHttp for CodexProxy {
@@ -273,13 +306,44 @@ impl ProxyHttp for CodexProxy {
                             .map(|s| s.to_string());
                         // Parse as ResponseRequest
                         match serde_json::from_slice::<ResponseRequest>(&ctx.request_body) {
-                            Ok(response_req) => {
+                            Ok(mut response_req) => {
+                                let mut previous_messages: Option<Vec<ChatMessage>> = None;
+                                if let Some(prev_id) = response_req.previous_response_id.clone() {
+                                    if let Some(snapshot) = self.get_conversation(&prev_id) {
+                                        if matches!(
+                                            &response_req.input,
+                                            crate::types::response_api::InputItemOrString::Array(_)
+                                        ) {
+                                            debug!(
+                                                "[REQUEST_CONVERT] previous_response_id + input[] detected, applying prefer-previous merge policy"
+                                            );
+                                        }
+                                        if response_req.instructions.is_none() {
+                                            response_req.instructions = snapshot.instructions.clone();
+                                        }
+                                        previous_messages = Some(snapshot.messages);
+                                    } else {
+                                        warn!(
+                                            "[REQUEST_CONVERT] previous_response_id not found in context store: {}",
+                                            prev_id
+                                        );
+                                    }
+                                }
                                 let context = ResponseRequestContext::from(&response_req);
                                 // Set context before converting (needs mutable ctx)
                                 ctx.set_response_request_context(context);
                                 // Convert using provider (model_override is now an owned String)
                                 match response_to_chat(response_req, provider.as_ref(), model_override.as_deref()) {
-                                    Ok(chat_req) => {
+                                    Ok(mut chat_req) => {
+                                        if let Some(history) = previous_messages {
+                                            chat_req.messages = merge_history_messages(history, chat_req.messages);
+                                        }
+                                        ctx.pending_instructions = chat_req
+                                            .messages
+                                            .iter()
+                                            .find(|m| m.role == MessageRole::System)
+                                            .map(|m| m.content.as_text());
+                                        ctx.pending_conversation_messages = Some(chat_req.messages.clone());
                                         // Serialize ChatRequest as JSON
                                         match serde_json::to_vec(&chat_req) {
                                             Ok(converted) => {
@@ -461,6 +525,7 @@ impl ProxyHttp for CodexProxy {
                     ctx,
                     provider,
                     self.log_body,
+                    self.conversation_store.clone(),
                 );
 
                 // Process streaming frames until end_of_body
@@ -489,6 +554,7 @@ impl ProxyHttp for CodexProxy {
             if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty()
                 && let Ok(text) = std::str::from_utf8(&ctx.response_body)
                     && let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
+                        let assistant_message = chat_resp.choices.first().map(|c| c.message.clone());
                         // Get context from stream_state (set during request_body_filter)
                         let request_context = ctx.stream_state.as_ref()
                             .and_then(|s| s.request_context.as_ref());
@@ -502,6 +568,19 @@ impl ProxyHttp for CodexProxy {
                                         debug!("[CONVERTED RESPONSE] {}", String::from_utf8_lossy(&converted));
                                     }
                                     *body = Some(Bytes::from(converted));
+                                }
+                                if let (Some(mut messages), Some(assistant_message)) = (
+                                    ctx.pending_conversation_messages.clone(),
+                                    assistant_message,
+                                ) {
+                                    messages.push(assistant_message);
+                                    self.store_conversation(
+                                        response_obj.id.clone(),
+                                        ConversationSnapshot {
+                                            instructions: ctx.pending_instructions.clone(),
+                                            messages,
+                                        },
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -634,6 +713,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::config::{BackendConfig, MatchRules};
+    use crate::types::chat_api::{ChatMessage, Content, MessageRole};
     use crate::providers::GLMProvider;
     use crate::providers::Provider;
 
@@ -657,5 +737,47 @@ mod tests {
         providers.insert("glm".to_string(), Box::new(GLMProvider) as Box<dyn Provider + Send + Sync>);
         let proxy = CodexProxy::new(router, providers, true, std::path::PathBuf::from("logs"));
         assert!(proxy.log_body);
+    }
+
+    fn msg(role: MessageRole, text: &str) -> ChatMessage {
+        ChatMessage {
+            role,
+            content: Content::String(text.to_string()),
+            name: None,
+            annotations: None,
+            tool_calls: None,
+            function_call: None,
+            tool_call_id: None,
+            refusal: None,
+        }
+    }
+
+    #[test]
+    fn test_merge_history_messages_prefers_previous_and_appends_incremental() {
+        let history = vec![
+            msg(MessageRole::System, "You are helpful"),
+            msg(MessageRole::User, "hello"),
+            msg(MessageRole::Assistant, "hi"),
+        ];
+        let current = vec![
+            msg(MessageRole::System, "You are helpful"),
+            msg(MessageRole::User, "hello"),
+            msg(MessageRole::Assistant, "hi"),
+            msg(MessageRole::User, "next question"),
+        ];
+
+        let merged = super::merge_history_messages(history, current);
+        assert_eq!(merged.len(), 4);
+        assert_eq!(merged[3].content.as_text(), "next question");
+    }
+
+    #[test]
+    fn test_merge_history_messages_when_no_overlap_appends_all_current() {
+        let history = vec![msg(MessageRole::System, "system"), msg(MessageRole::Assistant, "a1")];
+        let current = vec![msg(MessageRole::User, "new question")];
+
+        let merged = super::merge_history_messages(history, current);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[2].content.as_text(), "new question");
     }
 }

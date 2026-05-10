@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::convert::{ResponseRequestContext, StreamState};
 use crate::config::BackendInfo;
+use crate::types::chat_api::ChatMessage;
 
 /// Proxy context attached to each request session.
 #[derive(Debug)]
@@ -42,6 +43,10 @@ pub struct ProxyContext {
     pub upstream_content_type: Option<String>,
     /// Number of valid upstream chat stream chunks parsed.
     pub stream_chunks_parsed: usize,
+    /// Conversation messages before upstream response (for follow-up turn storage).
+    pub pending_conversation_messages: Option<Vec<ChatMessage>>,
+    /// Effective instructions used for this request after previous_response expansion.
+    pub pending_instructions: Option<String>,
 }
 
 impl ProxyContext {
@@ -65,6 +70,8 @@ impl ProxyContext {
             upstream_status: None,
             upstream_content_type: None,
             stream_chunks_parsed: 0,
+            pending_conversation_messages: None,
+            pending_instructions: None,
         }
     }
 

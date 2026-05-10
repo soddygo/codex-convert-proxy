@@ -3,10 +3,14 @@
 //! Extracts the streaming response conversion logic from `response_body_filter`
 //! to improve code organization and single responsibility principle.
 
+use std::sync::Arc;
+
 use tracing::{debug, error, warn};
 
 use crate::convert::{chat_chunk_to_response_events, event_to_sse, ResponseStreamEvent};
 use crate::providers::Provider;
+use crate::proxy::context_store::{ConversationSnapshot, ConversationStore};
+use crate::types::chat_api::{ChatMessage, Content, FunctionCall, MessageRole, ToolCall};
 use crate::types::chat_api::ChatStreamChunk;
 use crate::util::parse_sse;
 
@@ -21,6 +25,8 @@ pub struct StreamingResponseHandler<'a> {
     provider: Option<Box<dyn Provider + Send + Sync>>,
     /// Whether to log bodies for debugging.
     log_body: bool,
+    /// Conversation store for persisting completed turns.
+    conversation_store: Arc<ConversationStore>,
 }
 
 impl<'a> StreamingResponseHandler<'a> {
@@ -29,11 +35,13 @@ impl<'a> StreamingResponseHandler<'a> {
         ctx: &'a mut ProxyContext,
         provider: Option<Box<dyn Provider + Send + Sync>>,
         log_body: bool,
+        conversation_store: Arc<ConversationStore>,
     ) -> Self {
         Self {
             ctx,
             provider,
             log_body,
+            conversation_store,
         }
     }
 
@@ -135,6 +143,49 @@ impl<'a> StreamingResponseHandler<'a> {
                     state.is_completed = true;
                 } else {
                     let response_obj = state.build_response_object();
+                    if let Some(mut messages) = self.ctx.pending_conversation_messages.clone() {
+                        let assistant_tool_calls: Vec<ToolCall> = state
+                            .completed_tool_calls
+                            .iter()
+                            .map(|tc| ToolCall {
+                                id: tc.call_id.clone(),
+                                tool_type: "function".to_string(),
+                                function: FunctionCall {
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                },
+                            })
+                            .collect();
+                        messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: Content::String(if state.full_text.is_empty() {
+                                state.refusal_text.clone()
+                            } else {
+                                state.full_text.clone()
+                            }),
+                            name: None,
+                            annotations: None,
+                            tool_calls: if assistant_tool_calls.is_empty() {
+                                None
+                            } else {
+                                Some(assistant_tool_calls)
+                            },
+                            tool_call_id: None,
+                            function_call: None,
+                            refusal: if state.refusal_text.is_empty() {
+                                None
+                            } else {
+                                Some(state.refusal_text.clone())
+                            },
+                        });
+                        self.conversation_store.insert(
+                            response_obj.id.clone(),
+                            ConversationSnapshot {
+                                instructions: self.ctx.pending_instructions.clone(),
+                                messages,
+                            },
+                        );
+                    }
                     debug!(
                         "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}, parsed_chunks={}",
                         response_obj.id,

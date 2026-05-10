@@ -3,6 +3,7 @@
 //! This module requires the `server` feature to be enabled.
 
 pub mod context;
+pub mod context_store;
 pub mod filters;
 pub mod core;
 pub mod streaming_handler;

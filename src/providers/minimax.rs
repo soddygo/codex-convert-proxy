@@ -101,6 +101,8 @@ mod tests {
                 annotations: None,
                 tool_calls: None,
                 tool_call_id: None,
+                function_call: None,
+                refusal: None,
             }],
             tools: None,
             tool_choice: None,
@@ -118,6 +120,8 @@ mod tests {
             n: None,
             stop: None,
             response_format: None,
+            reasoning_effort: None,
+            parallel_tool_calls: None,
             seed: None,
             service_tier: None,
         };

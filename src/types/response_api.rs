@@ -291,7 +291,7 @@ pub enum ResponseContentPart {
         #[serde(default)]
         annotations: Vec<ResponseAnnotation>,
     },
-    Refusal { text: String },
+    Refusal { refusal: String },
     InputSummary { text: String },
 }
 
@@ -415,4 +415,10 @@ pub struct ResponseTextConfig {
 pub struct ResponseTextFormat {
     #[serde(rename = "type")]
     pub format_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }

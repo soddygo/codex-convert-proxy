@@ -58,6 +58,20 @@ pub fn chat_to_response_with_context(
 
 
     let mut outputs = Vec::new();
+    let finish_reason = choice.finish_reason.as_deref().unwrap_or("stop");
+    let (response_status, incomplete_details) = match finish_reason {
+        "length" => (
+            "incomplete".to_string(),
+            Some(serde_json::json!({"reason": "max_output_tokens"})),
+        ),
+        "content_filter" => (
+            "incomplete".to_string(),
+            Some(serde_json::json!({"reason": "content_filter"})),
+        ),
+        _ => ("completed".to_string(), None),
+    };
+
+    let mut message_parts: Vec<ResponseContentPart> = Vec::new();
 
     // Convert message content (strip thinking tags)
     if let Some(content) = extract_content(&choice.message.content) {
@@ -85,27 +99,49 @@ pub fn chat_to_response_with_context(
 
         // Add text output if present (after stripping thinking tags)
         if !actual_content.is_empty() {
-            outputs.push(ResponseOutputItem {
-                id: format!("msg_{}", chat_resp.id),
-                item_type: OutputItemType::Message,
-                status: Some("completed".to_string()),
-                content: Some(vec![ResponseContentPart::OutputText {
-                    text: actual_content,
-                    annotations: mapped_annotations.clone(),
-                }]),
-                role: Some("assistant".to_string()),
-                name: None,
-                arguments: None,
-                call_id: None,
-                queries: None,
-                results: None,
+            message_parts.push(ResponseContentPart::OutputText {
+                text: actual_content,
+                annotations: mapped_annotations.clone(),
             });
         }
     }
 
+    // Convert explicit refusal payload when present.
+    if let Some(refusal) = &choice.message.refusal
+        && !refusal.is_empty()
+    {
+        message_parts.push(ResponseContentPart::Refusal {
+            refusal: refusal.clone(),
+        });
+    }
+
+    if !message_parts.is_empty() {
+        outputs.push(ResponseOutputItem {
+            id: format!("msg_{}", chat_resp.id),
+            item_type: OutputItemType::Message,
+            status: Some("completed".to_string()),
+            content: Some(message_parts),
+            role: Some("assistant".to_string()),
+            name: None,
+            arguments: None,
+            call_id: None,
+            queries: None,
+            results: None,
+        });
+    }
+
     // Convert tool calls
-    if let Some(tool_calls) = &choice.message.tool_calls {
-        for tc in tool_calls {
+    let mut normalized_tool_calls = choice.message.tool_calls.clone().unwrap_or_default();
+    if normalized_tool_calls.is_empty()
+        && let Some(function_call) = &choice.message.function_call
+    {
+        normalized_tool_calls.push(crate::types::chat_api::ToolCall {
+            id: format!("call_{}", chat_resp.id),
+            tool_type: "function".to_string(),
+            function: function_call.clone(),
+        });
+    }
+    for tc in &normalized_tool_calls {
             let mapped_type = map_tool_name_to_output_type(
                 &tc.function.name,
                 request_context.map(|ctx| &ctx.tools),
@@ -128,7 +164,6 @@ pub fn chat_to_response_with_context(
                 queries,
                 results,
             });
-        }
     }
 
     let usage = chat_resp.usage.map(|u| Usage {
@@ -156,18 +191,21 @@ pub fn chat_to_response_with_context(
     let default_text = Some(ResponseTextConfig {
         format: Some(ResponseTextFormat {
             format_type: "text".to_string(),
+            name: None,
+            schema: None,
+            strict: None,
         }),
     });
 
     Ok(ResponseObject {
         id: format!("resp_{}", chat_resp.id),
         object: "response".to_string(),
-        status: "completed".to_string(),
+        status: response_status,
         model: chat_resp.model,
         created_at: chat_resp.created as i64,
         completed_at: Some(chrono::Utc::now().timestamp()),
         error: None,
-        incomplete_details: None,
+        incomplete_details,
         instructions: request_context.and_then(|ctx| ctx.instructions.clone()),
         max_output_tokens: request_context.and_then(|ctx| ctx.max_output_tokens),
         max_tool_calls: None,
@@ -239,6 +277,8 @@ mod tests {
                     annotations: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -296,6 +336,8 @@ mod tests {
                     }]),
                     tool_calls: None,
                     tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -356,6 +398,8 @@ mod tests {
                         },
                     }]),
                     tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
                 },
                 finish_reason: Some("tool_calls".to_string()),
             }],
@@ -401,6 +445,8 @@ mod tests {
                         },
                     }]),
                     tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
                 },
                 finish_reason: Some("tool_calls".to_string()),
             }],
@@ -500,5 +546,126 @@ mod tests {
         let (content, reasoning) = parse_thought_tags("<think>Hello");
         assert_eq!(content, "<think>Hello");
         assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn test_finish_reason_length_maps_incomplete() {
+        let chat_resp = ChatResponse {
+            id: "chat_len".to_string(),
+            object_name: "chat.completion".to_string(),
+            created: 1234567890,
+            model: "gpt-4o".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: Content::String("partial".to_string()),
+                    name: None,
+                    annotations: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
+                },
+                finish_reason: Some("length".to_string()),
+            }],
+            usage: None,
+            service_tier: None,
+            system_fingerprint: None,
+        };
+        let response = chat_to_response(chat_resp).unwrap();
+        assert_eq!(response.status, "incomplete");
+        assert_eq!(
+            response
+                .incomplete_details
+                .as_ref()
+                .and_then(|v| v.get("reason"))
+                .and_then(|v| v.as_str()),
+            Some("max_output_tokens")
+        );
+    }
+
+    #[test]
+    fn test_legacy_function_call_is_converted() {
+        let chat_resp = ChatResponse {
+            id: "chat_fc".to_string(),
+            object_name: "chat.completion".to_string(),
+            created: 1234567890,
+            model: "gpt-4o".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: Content::String(String::new()),
+                    name: None,
+                    annotations: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    function_call: Some(crate::types::chat_api::FunctionCall {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"city":"Beijing"}"#.to_string(),
+                    }),
+                    refusal: None,
+                },
+                finish_reason: Some("function_call".to_string()),
+            }],
+            usage: None,
+            service_tier: None,
+            system_fingerprint: None,
+        };
+        let response = chat_to_response(chat_resp).unwrap();
+        assert!(response
+            .output
+            .iter()
+            .any(|item| item.item_type == OutputItemType::FunctionCall));
+    }
+
+    #[test]
+    fn test_refusal_maps_to_message_refusal_content() {
+        let chat_resp = ChatResponse {
+            id: "chat_refuse".to_string(),
+            object_name: "chat.completion".to_string(),
+            created: 1234567890,
+            model: "gpt-4o".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: Content::String(String::new()),
+                    name: None,
+                    annotations: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    function_call: None,
+                    refusal: Some("I cannot help with that.".to_string()),
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: None,
+            service_tier: None,
+            system_fingerprint: None,
+        };
+        let response = chat_to_response(chat_resp).unwrap();
+        let refusal_msg = response
+            .output
+            .iter()
+            .find(|item| {
+                item.content
+                    .as_ref()
+                    .is_some_and(|parts| parts.iter().any(|p| matches!(p, ResponseContentPart::Refusal { .. })))
+            })
+            .expect("refusal content should exist");
+        assert_eq!(refusal_msg.item_type, OutputItemType::Message);
+        let message_count = response
+            .output
+            .iter()
+            .filter(|item| item.item_type == OutputItemType::Message)
+            .count();
+        assert_eq!(message_count, 1, "refusal must be in same message item");
+        let parts = refusal_msg.content.as_ref().expect("message content should exist");
+        assert!(parts.iter().any(|p| matches!(
+            p,
+            ResponseContentPart::Refusal { refusal } if refusal == "I cannot help with that."
+        )));
     }
 }

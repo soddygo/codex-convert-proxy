@@ -68,6 +68,7 @@ pub enum ResponseStreamEvent {
         name: Option<String>,
         arguments: Option<String>,
         text: Option<String>,
+        refusal: Option<String>,
     },
     /// Reasoning output item added.
     ReasoningAdded {
@@ -106,6 +107,7 @@ pub enum ResponseStreamEvent {
     FunctionCallArgumentsDelta {
         output_index: u32,
         item_id: String,
+        call_id: Option<String>,
         delta: String,
     },
     /// Function call arguments done.
