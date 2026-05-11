@@ -2,6 +2,11 @@
 name = "codex-convert-proxy"
 version = "0.1.0"
 edition = "2024"
+description = "A high-performance proxy server that converts between different AI API formats"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/soddygo/codex-convert-proxy"
+keywords = ["proxy", "ai", "openai", "api", "conversion"]
+categories = ["web-programming", "network-programming"]
 
 [features]
 # Default = full library + server (standalone proxy binary)
