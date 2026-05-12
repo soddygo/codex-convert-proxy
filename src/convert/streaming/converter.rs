@@ -126,11 +126,13 @@ pub fn chat_chunk_to_response_events(
                                 item_type: "message".to_string(),
                                 role: Some("assistant".to_string()),
                                 call_id: None,
+                                name: None,
                             });
                             events.push(ResponseStreamEvent::ContentPartAdded {
                                 item_id: state.output_id.clone(),
                                 output_index: text_idx,
                                 content_index: 0,
+                                part_type: "output_text".to_string(),
                             });
                             state.is_output_item_added = true;
                             state.is_content_part_added = true;
@@ -162,11 +164,13 @@ pub fn chat_chunk_to_response_events(
                         item_type: "message".to_string(),
                         role: Some("assistant".to_string()),
                         call_id: None,
+                        name: None,
                     });
                     events.push(ResponseStreamEvent::ContentPartAdded {
                         item_id: state.output_id.clone(),
                         output_index: text_idx,
                         content_index: 0,
+                        part_type: "refusal".to_string(),
                     });
                     state.is_output_item_added = true;
                     state.is_content_part_added = true;
@@ -220,12 +224,14 @@ pub fn chat_chunk_to_response_events(
                         let initial_name = tc.function.name.clone().unwrap_or_default();
                         let item_type = map_tool_name_to_stream_item_type(&initial_name, state.request_context.as_ref());
                         tracing::debug!("[TOOL_CALL] Creating new tool call: func_id={}, output_index={}", func_id, func_output_index);
+                        let name_for_item = if initial_name.is_empty() { None } else { Some(initial_name.clone()) };
                         events.push(ResponseStreamEvent::OutputItemAdded {
                             output_index: func_output_index,
                             item_id: func_id.clone(),
                             item_type: item_type.clone(),
                             role: None,
                             call_id: Some(tc_id.clone()),
+                            name: name_for_item,
                         });
                         state.is_function_call_item_added = true;
 
@@ -335,7 +341,6 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             output_index: tc_state.output_index,
             item_id: tc_state.id.clone(),
             call_id: tc_state.call_id.clone(),
-            name: tc_state.name.clone(),
             arguments: tc_state.arguments.clone(),
         });
         events.push(ResponseStreamEvent::OutputItemDone {
@@ -348,6 +353,7 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             arguments: Some(tc_state.arguments.clone()),
             text: None,
             refusal: None,
+            summary: None,
         });
         state.completed_tool_calls.push(tc_state);
     }
@@ -365,6 +371,7 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
                 item_id: state.output_id.clone(),
                 output_index: text_idx,
                 content_index: 0,
+                part_type: "output_text".to_string(),
                 text: state.full_text.clone(),
             });
         }
@@ -374,6 +381,13 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
                 output_index: text_idx,
                 content_index: 0,
                 refusal: state.refusal_text.clone(),
+            });
+            events.push(ResponseStreamEvent::ContentPartDone {
+                item_id: state.output_id.clone(),
+                output_index: text_idx,
+                content_index: 0,
+                part_type: "refusal".to_string(),
+                text: state.refusal_text.clone(),
             });
         }
         events.push(ResponseStreamEvent::OutputItemDone {
@@ -394,6 +408,7 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             } else {
                 Some(state.refusal_text.clone())
             },
+            summary: None,
         });
     }
 
@@ -414,8 +429,11 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             call_id: None,
             name: None,
             arguments: None,
-            text: Some(state.reasoning_text.clone()),
+            text: None,
             refusal: None,
+            summary: Some(vec![crate::types::response_api::ReasoningSummaryPart::SummaryText {
+                text: state.reasoning_text.clone(),
+            }]),
         });
     }
 

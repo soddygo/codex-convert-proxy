@@ -205,10 +205,10 @@ impl StreamState {
             output.push(ResponseOutputItem {
                 id: format!("reasoning_{}", self.response_id),
                 item_type: OutputItemType::Reasoning,
-                status: Some("completed".to_string()),
-                content: Some(vec![ResponseContentPart::OutputText {
+                status: None,
+                content: Some(vec![]),
+                summary: Some(vec![crate::types::response_api::ReasoningSummaryPart::SummaryText {
                     text: self.reasoning_text.clone(),
-                    annotations: vec![],
                 }]),
                 role: None,
                 name: None,
@@ -216,6 +216,7 @@ impl StreamState {
                 call_id: None,
                 queries: None,
                 results: None,
+                namespace: None,
             });
         }
 
@@ -226,6 +227,7 @@ impl StreamState {
                 content_parts.push(ResponseContentPart::OutputText {
                     text: self.full_text.clone(),
                     annotations: vec![],
+                    logprobs: vec![],
                 });
             }
             if !self.refusal_text.is_empty() {
@@ -244,6 +246,8 @@ impl StreamState {
                 call_id: None,
                 queries: None,
                 results: None,
+                summary: None,
+                namespace: None,
             });
         }
 
@@ -266,6 +270,8 @@ impl StreamState {
                 call_id: Some(tc.call_id.clone()),
                 queries,
                 results,
+                summary: None,
+                namespace: None,
             });
         }
 
@@ -297,6 +303,7 @@ impl StreamState {
                 .incomplete_reason
                 .as_ref()
                 .map(|reason| serde_json::json!({ "reason": reason })),
+            background: None,
             instructions: self
                 .request_context
                 .as_ref()
@@ -319,13 +326,7 @@ impl StreamState {
             reasoning: self
                 .request_context
                 .as_ref()
-                .and_then(|ctx| ctx.reasoning.clone())
-                .or({
-                    Some(crate::types::response_api::ResponseReasoning {
-                        effort: None,
-                        summary: None,
-                    })
-                }),
+                .and_then(|ctx| ctx.reasoning.clone()),
             store: self.request_context.as_ref().and_then(|ctx| ctx.store),
             temperature: self
                 .request_context
@@ -366,6 +367,8 @@ impl StreamState {
                 .request_context
                 .as_ref()
                 .and_then(|ctx| ctx.metadata.clone()),
+            service_tier: None,
+            top_logprobs: None,
             usage,
         })
     }

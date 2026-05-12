@@ -110,7 +110,7 @@ impl ProxyHttp for CodexProxy {
         ctx.normalized_path = Some(normalized_path.clone());
 
         // Check if this is a conversion request (Responses API -> Chat API)
-        let is_conversion = normalized_path.starts_with("/v1/responses") || normalized_path.starts_with("/responses");
+        let is_conversion = (normalized_path.starts_with("/v1/responses") || normalized_path.starts_with("/responses")) && method == "POST";
         ctx.is_conversion_request = is_conversion;
 
         if is_conversion {
@@ -181,15 +181,13 @@ impl ProxyHttp for CodexProxy {
         let normalized_path = ctx.normalized_path.as_deref().unwrap_or(path.as_str());
 
         // Check if this is a conversion request (Responses API → Chat API)
-        let is_conversion_request = normalized_path.starts_with("/v1/responses")
-            || normalized_path.starts_with("/responses");
+        let is_conversion_request = (normalized_path.starts_with("/v1/responses")
+            || normalized_path.starts_with("/responses"))
+            && upstream_request.method.as_str() == "POST";
 
         // Get the provider's chat completions path (may differ per provider)
         // Handle Responses API paths (/v1/responses, /responses) and also Chat API paths (/v1/chat/completions)
-        let chat_api_path = if normalized_path.starts_with("/v1/responses")
-            || normalized_path.starts_with("/responses")
-            || normalized_path.starts_with("/v1/chat/completions")
-        {
+        let chat_api_path = if is_conversion_request || normalized_path.starts_with("/v1/chat/completions") {
             // Get provider and use its chat_completions_path
             if let Some(provider) = self.get_provider(&backend.name) {
                 provider.chat_completions_path()

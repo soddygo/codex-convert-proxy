@@ -83,10 +83,10 @@ pub fn chat_to_response_with_context(
                 outputs.push(ResponseOutputItem {
                     id: format!("reasoning_{}", chat_resp.id),
                     item_type: OutputItemType::Reasoning,
-                    status: Some("completed".to_string()),
-                    content: Some(vec![ResponseContentPart::OutputText {
+                    status: None,
+                    content: Some(vec![]),
+                    summary: Some(vec![crate::types::response_api::ReasoningSummaryPart::SummaryText {
                         text: reasoning_text.clone(),
-                        annotations: mapped_annotations.clone(),
                     }]),
                     role: None,
                     name: None,
@@ -94,6 +94,7 @@ pub fn chat_to_response_with_context(
                     call_id: None,
                     queries: None,
                     results: None,
+                    namespace: None,
                 });
             }
 
@@ -102,6 +103,7 @@ pub fn chat_to_response_with_context(
             message_parts.push(ResponseContentPart::OutputText {
                 text: actual_content,
                 annotations: mapped_annotations.clone(),
+                logprobs: vec![],
             });
         }
     }
@@ -127,6 +129,8 @@ pub fn chat_to_response_with_context(
             call_id: None,
             queries: None,
             results: None,
+            summary: None,
+            namespace: None,
         });
     }
 
@@ -163,6 +167,8 @@ pub fn chat_to_response_with_context(
                 call_id: Some(tc.id.clone()),
                 queries,
                 results,
+                summary: None,
+                namespace: None,
             });
     }
 
@@ -206,6 +212,7 @@ pub fn chat_to_response_with_context(
         completed_at: Some(chrono::Utc::now().timestamp()),
         error: None,
         incomplete_details,
+        background: None,
         instructions: request_context.and_then(|ctx| ctx.instructions.clone()),
         max_output_tokens: request_context.and_then(|ctx| ctx.max_output_tokens),
         max_tool_calls: None,
@@ -223,6 +230,8 @@ pub fn chat_to_response_with_context(
         truncation: request_context.and_then(|ctx| ctx.truncation.clone()),
         user: request_context.and_then(|ctx| ctx.user.clone()),
         metadata: request_context.and_then(|ctx| ctx.metadata.clone()),
+        service_tier: None,
+        top_logprobs: None,
         usage,
     })
 }
@@ -481,6 +490,7 @@ mod tests {
             metadata: None,
             previous_response_id: None,
             parallel_tool_calls: None,
+            background: None,
         };
         let ctx = crate::convert::streaming::ResponseRequestContext::from(&req);
         let response = chat_to_response_with_context(chat_resp, Some(&ctx)).unwrap();

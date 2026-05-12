@@ -30,12 +30,14 @@ pub enum ResponseStreamEvent {
         item_type: String,
         role: Option<String>,
         call_id: Option<String>,
+        name: Option<String>,
     },
     /// Content part was added.
     ContentPartAdded {
         item_id: String,
         output_index: u32,
         content_index: u32,
+        part_type: String,
     },
     /// Output text delta (content chunk).
     OutputTextDelta {
@@ -56,6 +58,7 @@ pub enum ResponseStreamEvent {
         item_id: String,
         output_index: u32,
         content_index: u32,
+        part_type: String,
         text: String,
     },
     /// Output item done.
@@ -69,6 +72,7 @@ pub enum ResponseStreamEvent {
         arguments: Option<String>,
         text: Option<String>,
         refusal: Option<String>,
+        summary: Option<Vec<crate::types::response_api::ReasoningSummaryPart>>,
     },
     /// Reasoning output item added.
     ReasoningAdded {
@@ -115,7 +119,6 @@ pub enum ResponseStreamEvent {
         output_index: u32,
         item_id: String,
         call_id: String,
-        name: String,
         arguments: String,
     },
     /// Response completed with final object.

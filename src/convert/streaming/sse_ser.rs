@@ -36,7 +36,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                 }),
             )
         }
-        ResponseStreamEvent::OutputItemAdded { output_index, item_id, item_type, role, call_id } => {
+        ResponseStreamEvent::OutputItemAdded { output_index, item_id, item_type, role, call_id, name } => {
             let mut item = serde_json::Map::new();
             item.insert("id".to_string(), serde_json::json!(item_id));
             item.insert("type".to_string(), serde_json::json!(item_type));
@@ -46,6 +46,9 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             }
             if let Some(cid) = call_id {
                 item.insert("call_id".to_string(), serde_json::json!(cid));
+            }
+            if let Some(n) = name {
+                item.insert("name".to_string(), serde_json::json!(n));
             }
             if item_type == "message" || item_type == "reasoning" {
                 item.insert("content".to_string(), serde_json::json!([]));
@@ -59,7 +62,20 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                 }),
             )
         }
-        ResponseStreamEvent::ContentPartAdded { item_id, output_index, content_index } => {
+        ResponseStreamEvent::ContentPartAdded { item_id, output_index, content_index, part_type } => {
+            let part: serde_json::Value = if part_type == "refusal" {
+                serde_json::json!({
+                    "type": "refusal",
+                    "refusal": "",
+                })
+            } else {
+                serde_json::json!({
+                    "type": "output_text",
+                    "text": "",
+                    "annotations": [],
+                    "logprobs": [],
+                })
+            };
             sse_event(
                 "response.content_part.added",
                 serde_json::json!({
@@ -67,11 +83,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "output_index": output_index,
                     "item_id": item_id,
                     "content_index": content_index,
-                    "part": {
-                        "type": "output_text",
-                        "text": "",
-                        "annotations": [],
-                    }
+                    "part": part,
                 }),
             )
         }
@@ -108,8 +120,22 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             item_id,
             output_index,
             content_index,
+            part_type,
             text,
         } => {
+            let part: serde_json::Value = if part_type == "refusal" {
+                serde_json::json!({
+                    "type": "refusal",
+                    "refusal": text,
+                })
+            } else {
+                serde_json::json!({
+                    "type": "output_text",
+                    "text": text,
+                    "annotations": [],
+                    "logprobs": [],
+                })
+            };
             sse_event(
                 "response.content_part.done",
                 serde_json::json!({
@@ -117,11 +143,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "item_id": item_id,
                     "output_index": output_index,
                     "content_index": content_index,
-                    "part": {
-                        "type": "output_text",
-                        "text": text,
-                        "annotations": [],
-                    }
+                    "part": part,
                 }),
             )
         }
@@ -135,11 +157,14 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             arguments,
             text,
             refusal,
+            summary,
         } => {
             let mut item = serde_json::Map::new();
             item.insert("id".to_string(), serde_json::json!(item_id));
             item.insert("type".to_string(), serde_json::json!(item_type));
-            item.insert("status".to_string(), serde_json::json!("completed"));
+            if item_type != "reasoning" {
+                item.insert("status".to_string(), serde_json::json!("completed"));
+            }
             if let Some(r) = role {
                 item.insert("role".to_string(), serde_json::json!(r));
             }
@@ -158,6 +183,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "type": "output_text",
                     "text": body_text,
                     "annotations": [],
+                    "logprobs": [],
                 }));
             }
             if let Some(refusal_text) = refusal {
@@ -168,6 +194,13 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             }
             if !content_parts.is_empty() {
                 item.insert("content".to_string(), serde_json::Value::Array(content_parts));
+            }
+            if let Some(summary_parts) = summary {
+                let parts: Vec<serde_json::Value> = summary_parts
+                    .iter()
+                    .map(|p| serde_json::json!(p))
+                    .collect();
+                item.insert("summary".to_string(), serde_json::Value::Array(parts));
             }
             sse_event(
                 "response.output_item.done",
@@ -187,7 +220,6 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "item": {
                         "id": item_id,
                         "type": "reasoning",
-                        "status": "in_progress",
                         "content": [],
                     },
                 }),
@@ -253,7 +285,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                 }),
             )
         }
-        ResponseStreamEvent::FunctionCallArgumentsDone { output_index, item_id, call_id, name, arguments } => {
+        ResponseStreamEvent::FunctionCallArgumentsDone { output_index, item_id, call_id, arguments } => {
             sse_event(
                 "response.function_call_arguments.done",
                 serde_json::json!({
@@ -261,7 +293,6 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "output_index": output_index,
                     "item_id": item_id,
                     "call_id": call_id,
-                    "name": name,
                     "arguments": arguments,
                 }),
             )
@@ -393,6 +424,7 @@ mod tests {
             item_id: "msg_test".to_string(),
             output_index: 0,
             content_index: 0,
+            part_type: "output_text".to_string(),
         };
         let sse = event_to_sse(&event);
         assert!(sse.contains("event: response.content_part.added"));
@@ -426,6 +458,7 @@ mod tests {
             arguments: None,
             text: None,
             refusal: Some("Not allowed".to_string()),
+            summary: None,
         };
         let sse = event_to_sse(&event);
         assert!(sse.contains("event: response.output_item.done"));
@@ -470,6 +503,7 @@ mod tests {
             metadata: None,
             previous_response_id: None,
             parallel_tool_calls: None,
+            background: None,
         };
         let ctx = ResponseRequestContext::from(&req);
         let metadata = ctx.metadata.unwrap_or_default();

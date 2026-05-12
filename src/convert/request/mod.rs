@@ -142,6 +142,7 @@ mod tests {
             metadata: None,
             previous_response_id: None,
             parallel_tool_calls: None,
+            background: None,
         }
     }
 
@@ -173,6 +174,7 @@ mod tests {
             arguments: Some(r#"{"city":"Beijing"}"#.to_string()),
             call_id: None,
             output: None,
+            namespace: None,
         }]));
 
         let provider = crate::providers::minimax::MiniMaxProvider;
@@ -199,6 +201,7 @@ mod tests {
                 arguments: Some(r#"{"city":"Beijing"}"#.to_string()),
                 call_id: None,
                 output: None,
+                namespace: None,
             },
             InputItem {
                 id: None,
@@ -209,6 +212,7 @@ mod tests {
                 arguments: None,
                 call_id: Some("call_123".to_string()),
                 output: Some("25 degrees, sunny".to_string()),
+                namespace: None,
             },
         ]));
 
@@ -238,6 +242,7 @@ mod tests {
             arguments: None,
             call_id: Some("call_orphan".to_string()),
             output: Some("sunny".to_string()),
+            namespace: None,
         }]));
 
         let provider = crate::providers::minimax::MiniMaxProvider;
@@ -272,6 +277,7 @@ mod tests {
                 arguments: Some(r#"{"cmd":"ls"}"#.to_string()),
                 call_id: Some("call_1".to_string()),
                 output: None,
+                namespace: None,
             },
             InputItem {
                 id: Some("msg_1".to_string()),
@@ -282,6 +288,7 @@ mod tests {
                 arguments: None,
                 call_id: None,
                 output: None,
+                namespace: None,
             },
             InputItem {
                 id: Some("fco_1".to_string()),
@@ -292,6 +299,7 @@ mod tests {
                 arguments: None,
                 call_id: Some("call_1".to_string()),
                 output: Some("ok".to_string()),
+                namespace: None,
             },
         ]));
 
@@ -327,6 +335,7 @@ mod tests {
                 arguments: Some(r#"{"cmd":"ls"}"#.to_string()),
                 call_id: Some("call_1".to_string()),
                 output: None,
+                namespace: None,
             },
             InputItem {
                 id: Some("msg_1".to_string()),
@@ -337,6 +346,7 @@ mod tests {
                 arguments: None,
                 call_id: None,
                 output: None,
+                namespace: None,
             },
             InputItem {
                 id: Some("fco_1".to_string()),
@@ -347,6 +357,7 @@ mod tests {
                 arguments: None,
                 call_id: Some("call_1".to_string()),
                 output: Some("ok".to_string()),
+                namespace: None,
             },
         ]));
 
@@ -408,6 +419,7 @@ mod tests {
             arguments: None,
             call_id: None,
             output: None,
+            namespace: None,
         }]));
 
         let provider = GLMProvider;

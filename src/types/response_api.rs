@@ -48,7 +48,7 @@ pub struct ResponseRequest {
     #[serde(default)]
     pub user: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, alias = "thinking")]
     pub reasoning: Option<ResponseReasoning>,
 
     #[serde(default)]
@@ -68,6 +68,10 @@ pub struct ResponseRequest {
 
     #[serde(default)]
     pub parallel_tool_calls: Option<bool>,
+
+    /// Whether to run the response in background.
+    #[serde(default)]
+    pub background: Option<bool>,
 }
 
 /// Input can be either a string or an array of InputItems.
@@ -91,6 +95,8 @@ pub struct InputItem {
     pub arguments: Option<String>,
     pub call_id: Option<String>,
     pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// Content can be a string or array of content parts.
@@ -245,6 +251,14 @@ pub struct FunctionToolChoice {
     pub name: String,
 }
 
+/// A part within a reasoning summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningSummaryPart {
+    #[serde(rename = "summary_text")]
+    SummaryText { text: String },
+}
+
 /// Response output item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -263,6 +277,10 @@ pub struct ResponseOutputItem {
     pub queries: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Vec<ReasoningSummaryPart>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// Type of output item.
@@ -290,6 +308,8 @@ pub enum ResponseContentPart {
         text: String,
         #[serde(default)]
         annotations: Vec<ResponseAnnotation>,
+        #[serde(default)]
+        logprobs: Vec<serde_json::Value>,
     },
     Refusal { refusal: String },
     InputSummary { text: String },
@@ -327,6 +347,8 @@ pub struct ResponseObject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incomplete_details: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
@@ -359,6 +381,10 @@ pub struct ResponseObject {
     pub user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u32>,
     pub usage: Option<Usage>,
 }
 
