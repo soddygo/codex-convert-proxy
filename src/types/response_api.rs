@@ -101,6 +101,10 @@ pub struct InputItem {
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
+    /// Tools from tool_search_output items.
+    /// These are dynamically discovered tools that can be merged into the request.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tools: Option<Vec<Tool>>,
 }
 
 /// Content can be a string or array of content parts.
@@ -141,6 +145,75 @@ pub enum InputItemType {
     Message,
     FunctionCall,
     FunctionCallOutput,
+    /// Computer use tool call (Codex computer use feature)
+    #[serde(rename = "computer_call")]
+    ComputerCall,
+    /// Computer use output
+    #[serde(rename = "computer_call_output")]
+    ComputerCallOutput,
+    /// File search tool call
+    #[serde(rename = "file_search_call")]
+    FileSearchCall,
+    /// Web search tool call
+    #[serde(rename = "web_search_call")]
+    WebSearchCall,
+    /// Code interpreter tool call
+    #[serde(rename = "code_interpreter_call")]
+    CodeInterpreterCall,
+    /// Reasoning item
+    Reasoning,
+    /// Tool search call
+    #[serde(rename = "tool_search_call")]
+    ToolSearchCall,
+    /// Tool search output
+    #[serde(rename = "tool_search_output")]
+    ToolSearchOutput,
+    /// Image generation call
+    #[serde(rename = "image_generation_call")]
+    ImageGenerationCall,
+    /// Local shell call (OpenAI internal)
+    #[serde(rename = "local_shell_call")]
+    LocalShellCall,
+    /// Local shell call output (OpenAI internal)
+    #[serde(rename = "local_shell_call_output")]
+    LocalShellCallOutput,
+    /// Shell call (different from local_shell_call)
+    #[serde(rename = "shell_call")]
+    ShellCall,
+    /// Shell call output
+    #[serde(rename = "shell_call_output")]
+    ShellCallOutput,
+    /// MCP list tools
+    #[serde(rename = "mcp_list_tools")]
+    McpListTools,
+    /// MCP approval request
+    #[serde(rename = "mcp_approval_request")]
+    McpApprovalRequest,
+    /// MCP approval response
+    #[serde(rename = "mcp_approval_response")]
+    McpApprovalResponse,
+    /// MCP tool call
+    #[serde(rename = "mcp_call")]
+    McpCall,
+    /// Custom tool call
+    #[serde(rename = "custom_tool_call")]
+    CustomToolCall,
+    /// Custom tool call output
+    #[serde(rename = "custom_tool_call_output")]
+    CustomToolCallOutput,
+    /// Apply patch call (OpenAI internal)
+    #[serde(rename = "apply_patch_call")]
+    ApplyPatchCall,
+    /// Apply patch call output
+    #[serde(rename = "apply_patch_call_output")]
+    ApplyPatchCallOutput,
+    /// Compaction item (for response compaction API)
+    Compaction,
+    /// Catch-all for unknown input item types.
+    /// Note: serde(other) captures unknown variants but discards the type name.
+    /// The item will be logged as an unsupported type during conversion.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A tool definition.
@@ -292,13 +365,50 @@ pub struct ResponseOutputItem {
 #[serde(rename_all = "snake_case")]
 pub enum OutputItemType {
     Message,
+    #[serde(rename = "function_call")]
     FunctionCall,
     Reasoning,
+    #[serde(rename = "web_search_call")]
     WebSearchCall,
+    #[serde(rename = "file_search_call")]
     FileSearchCall,
+    #[serde(rename = "code_interpreter_call")]
     CodeInterpreterCall,
+    #[serde(rename = "computer_call")]
     ComputerCall,
+    #[serde(rename = "computer_call_output")]
+    ComputerCallOutput,
+    #[serde(rename = "tool_search_call")]
+    ToolSearchCall,
+    #[serde(rename = "tool_search_output")]
+    ToolSearchOutput,
+    #[serde(rename = "image_generation_call")]
+    ImageGenerationCall,
+    #[serde(rename = "local_shell_call")]
+    LocalShellCall,
+    #[serde(rename = "local_shell_call_output")]
+    LocalShellCallOutput,
+    #[serde(rename = "shell_call")]
+    ShellCall,
+    #[serde(rename = "shell_call_output")]
+    ShellCallOutput,
+    #[serde(rename = "mcp_list_tools")]
+    McpListTools,
+    #[serde(rename = "mcp_approval_request")]
+    McpApprovalRequest,
+    #[serde(rename = "mcp_approval_response")]
+    McpApprovalResponse,
+    #[serde(rename = "mcp_call")]
+    McpCall,
+    #[serde(rename = "custom_tool_call")]
     CustomToolCall,
+    #[serde(rename = "custom_tool_call_output")]
+    CustomToolCallOutput,
+    #[serde(rename = "apply_patch_call")]
+    ApplyPatchCall,
+    #[serde(rename = "apply_patch_call_output")]
+    ApplyPatchCallOutput,
+    Compaction,
     /// Catch-all for unknown output item types.
     #[serde(other)]
     Other,

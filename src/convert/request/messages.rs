@@ -6,16 +6,27 @@ use crate::types::chat_api::{
     ToolCall,
 };
 use crate::types::response_api::{
-    Content as ResponseContent, ContentPart, InputItemOrString,
+    Content as ResponseContent, ContentPart, InputItemOrString, Tool,
 };
 
 /// Convert input (with optional instructions) to Chat messages.
+///
+/// Returns:
+/// - `messages`: The converted chat messages
+/// - `extracted_tools`: Tools extracted from `tool_search_output` items
 pub fn convert_input_to_messages(
     input: InputItemOrString,
     instructions: Option<String>,
     enforce_tool_result_adjacency: bool,
-) -> Result<Vec<ChatMessage>, ConversionError> {
+) -> Result<(Vec<ChatMessage>, Vec<Tool>), ConversionError> {
     let mut messages = Vec::new();
+    #[allow(unused_mut)]
+    let mut extracted_tools: Vec<Tool> = Vec::new();
+    let mut pending_tool_calls: Option<Vec<ToolCall>> = None;
+    let mut emitted_tool_call_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut emitted_tool_call_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // Add system message from instructions
     if let Some(inst) = instructions {
@@ -26,8 +37,8 @@ pub fn convert_input_to_messages(
             annotations: None,
             tool_calls: None,
             tool_call_id: None,
-                function_call: None,
-                refusal: None,
+            function_call: None,
+            refusal: None,
         });
     }
 
@@ -46,13 +57,8 @@ pub fn convert_input_to_messages(
             });
         }
         InputItemOrString::Array(items) => {
-            let mut pending_tool_calls: Option<Vec<ToolCall>> = None;
-            let mut emitted_tool_call_ids: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            let mut emitted_tool_call_names: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
 
-            for item in items {
+            for mut item in items {
                 match item.item_type {
                     crate::types::response_api::InputItemType::Message => {
                         let role = match item.role.as_deref() {
@@ -61,6 +67,9 @@ pub fn convert_input_to_messages(
                             Some("assistant") => MessageRole::Assistant,
                             Some("tool") => MessageRole::Tool,
                             Some("user") | None => MessageRole::User,
+                            Some("unknown") => MessageRole::Unknown,
+                            Some("critic") => MessageRole::Critic,
+                            Some("discriminator") => MessageRole::Discriminator,
                             Some(other) => {
                                 return Err(ConversionError::InvalidFormat(format!(
                                     "unsupported message role: {other}"
@@ -223,6 +232,192 @@ pub fn convert_input_to_messages(
                             output_name
                         );
                     }
+                    // --- Unsupported InputItemType variants ---
+                    // These are valid Response API types but not supported for Chat API conversion.
+                    // Log warning with item id if available for debugging.
+                    // --- Unsupported InputItemType variants ---
+                    // These are valid Response API types but not supported for Chat API conversion.
+                    // We skip them with a warning so the request can continue processing.
+                    // These items typically represent internal/server-side features that don't
+                    // affect the actual conversation flow when skipped.
+                    crate::types::response_api::InputItemType::ComputerCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping computer_call input item (id={:?}), \
+                            computer use feature not supported in Chat API",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ComputerCallOutput => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping computer_call_output input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::FileSearchCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping file_search_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::WebSearchCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping web_search_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::CodeInterpreterCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping code_interpreter_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::Reasoning => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping reasoning input item (id={:?}), \
+                            reasoning items are for context but cannot be converted to Chat API format",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ToolSearchCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping tool_search_call input item (id={:?}, call_id={:?}), \
+                            tool_search_call is an output item type",
+                            item.id,
+                            item.call_id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ToolSearchOutput => {
+                        // Extract tools from tool_search_output and merge them
+                        if let Some(tools) = item.tools.take() {
+                            let count = tools.len();
+                            extracted_tools.extend(tools);
+                            tracing::debug!(
+                                "[REQUEST_CONVERT] extracted {} tools from tool_search_output (id={:?})",
+                                count,
+                                item.id
+                            );
+                        } else {
+                            tracing::debug!(
+                                "[REQUEST_CONVERT] tool_search_output has no tools (id={:?})",
+                                item.id
+                            );
+                        }
+                        // tool_search_output is just a tool carrier - no message emitted
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ImageGenerationCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping image_generation_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::LocalShellCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping local_shell_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::LocalShellCallOutput => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping local_shell_call_output input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ShellCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping shell_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ShellCallOutput => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping shell_call_output input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::McpListTools => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping mcp_list_tools input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::McpApprovalRequest => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping mcp_approval_request input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::McpApprovalResponse => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping mcp_approval_response input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::McpCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping mcp_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::CustomToolCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping custom_tool_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::CustomToolCallOutput => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping custom_tool_call_output input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ApplyPatchCall => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping apply_patch_call input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::ApplyPatchCallOutput => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping apply_patch_call_output input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::Compaction => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping compaction input item (id={:?})",
+                            item.id
+                        );
+                        continue;
+                    }
+                    crate::types::response_api::InputItemType::Unknown => {
+                        tracing::warn!(
+                            "[REQUEST_CONVERT] skipping unknown input item type (id={:?}), \
+                            this may be a new type not yet supported by the proxy",
+                            item.id
+                        );
+                        continue;
+                    }
                 }
             }
 
@@ -251,7 +446,7 @@ pub fn convert_input_to_messages(
         }
     }
 
-    Ok(messages)
+    Ok((messages, extracted_tools))
 }
 
 /// Extract text content from Response API content.
@@ -266,18 +461,28 @@ pub fn extract_content(content: &Option<ResponseContent>) -> Result<Content, Con
                         block_type: "text".to_string(),
                         text: Some(text.clone()),
                         image_url: None,
+                        input_audio: None,
+                        file: None,
+                        refusal: None,
                     }),
                     ContentPart::OutputText { text, .. } => blocks.push(ContentBlock {
                         block_type: "text".to_string(),
                         text: Some(text.clone()),
                         image_url: None,
+                        input_audio: None,
+                        file: None,
+                        refusal: None,
                     }),
                     ContentPart::InputImage { image_url } => blocks.push(ContentBlock {
                         block_type: "image_url".to_string(),
                         text: None,
                         image_url: Some(ImageUrlField::Object(ImageUrlObject {
                             url: image_url.clone(),
+                            detail: None,
                         })),
+                        input_audio: None,
+                        file: None,
+                        refusal: None,
                     }),
                     ContentPart::InputFile { file_url, file_id } => {
                         let file_ref = file_url
@@ -289,6 +494,9 @@ pub fn extract_content(content: &Option<ResponseContent>) -> Result<Content, Con
                             block_type: "text".to_string(),
                             text: Some(format!("[input_file] {}", file_ref)),
                             image_url: None,
+                            input_audio: None,
+                            file: None,
+                            refusal: None,
                         });
                     }
                 }
@@ -342,6 +550,7 @@ mod tests {
             call_id: None,
             output: None,
             namespace: None,
+            tools: None,
         }]);
         let err = convert_input_to_messages(input, None, false)
             .expect_err("unknown role must fail");

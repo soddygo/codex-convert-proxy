@@ -52,6 +52,18 @@ pub struct ChatRequest {
     pub seed: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// Web search options for Bing-based search
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_options: Option<serde_json::Value>,
+    /// Output modalities (e.g., ["text", "audio"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<String>>,
+    /// Prediction parameter for reducing latency
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<serde_json::Value>,
+    /// Audio output configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<serde_json::Value>,
 }
 
 /// Stream options for Chat API.
@@ -91,6 +103,12 @@ pub enum MessageRole {
     Assistant,
     Developer,
     Tool,
+    /// Unknown role (for forward compatibility)
+    Unknown,
+    /// Critic role (for reasoning models)
+    Critic,
+    /// Discriminator role
+    Discriminator,
 }
 
 /// Content can be a string or array of content blocks.
@@ -125,6 +143,32 @@ pub struct ContentBlock {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<ImageUrlField>,
+    /// Input audio content (base64 encoded audio data)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_audio: Option<InputAudioContent>,
+    /// File content reference
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileContent>,
+    /// Refusal content (when model refuses to respond)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+}
+
+/// Input audio content for message content blocks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InputAudioContent {
+    /// The audio data in base64 format
+    pub data: String,
+    /// The format of the audio (e.g., "mp3", "wav", "flac")
+    pub format: String,
+}
+
+/// File content reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FileContent {
+    pub file_id: String,
 }
 
 /// Chat image_url supports either string or object form.
@@ -146,6 +190,9 @@ impl From<String> for ImageUrlField {
 #[serde(rename_all = "snake_case")]
 pub struct ImageUrlObject {
     pub url: String,
+    /// Optional detail level: "low", "high", or "auto"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A tool definition for Chat API.

@@ -16,6 +16,16 @@ pub enum ConversionError {
 
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
+
+    /// tool_search_output's call_id does not match any registered tool_search_call.
+    #[error(
+        "tool_search call_id mismatch: expected '{expected}', got '{actual}'. \
+        The tool_search_output may be missing its corresponding tool_search_call."
+    )]
+    ToolSearchCallIdMismatch {
+        expected: String,
+        actual: String,
+    },
 }
 
 /// Error types for proxy operations.

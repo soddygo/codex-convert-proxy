@@ -87,6 +87,9 @@ mod tests {
                     block_type: "text".to_string(),
                     text: Some("Hello".to_string()),
                     image_url: None,
+                    input_audio: None,
+                    file: None,
+                    refusal: None,
                 }]),
                 name: None,
                 annotations: None,
@@ -115,6 +118,10 @@ mod tests {
             parallel_tool_calls: None,
             seed: None,
             service_tier: None,
+            web_search_options: None,
+            modalities: None,
+            prediction: None,
+            audio: None,
         };
 
         let provider = MiniMaxProvider;

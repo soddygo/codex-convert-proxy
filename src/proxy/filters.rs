@@ -13,7 +13,7 @@ use pingora_proxy::{ProxyHttp, Session};
 use tracing::{debug, error, info, warn};
 
 use crate::constants::*;
-use crate::convert::{ResponseRequestContext, response_to_chat};
+use crate::convert::{ResponseRequestContext, response_to_chat, ToolPriority};
 use crate::proxy::context_store::ConversationSnapshot;
 use crate::types::chat_api::{ChatMessage, MessageRole};
 use crate::types::response_api::ResponseRequest;
@@ -87,6 +87,7 @@ impl CodexProxy {
             response_req,
             provider.as_ref(),
             model_override.as_deref(),
+            ToolPriority::Merge,
         )?;
 
         if let Some(history) = previous_messages {

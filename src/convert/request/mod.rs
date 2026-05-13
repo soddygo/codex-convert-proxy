@@ -1,8 +1,10 @@
 //! Request conversion: Responses API → Chat API.
 
+mod context;
 mod messages;
 mod tools;
 
+pub use context::{ToolPriority, ToolSearchContext};
 pub use messages::{convert_input_to_messages, extract_content};
 pub use tools::{convert_tools, convert_tool_choice};
 
@@ -50,14 +52,27 @@ pub fn response_to_chat(
     response_req: ResponseRequest,
     provider: &dyn Provider,
     model_override: Option<&str>,
+    _tool_priority: ToolPriority,
 ) -> Result<ChatRequest, ConversionError> {
     let enforce_tool_result_adjacency = provider.name() == "minimax";
-    let messages = convert_input_to_messages(
+    let (messages, extracted_tools) = convert_input_to_messages(
         response_req.input,
         response_req.instructions,
         enforce_tool_result_adjacency,
     )?;
-    let tools = convert_tools(response_req.tools);
+
+    // Merge predefined tools with dynamically discovered tools
+    let merged_tools = if extracted_tools.is_empty() {
+        response_req.tools
+    } else if response_req.tools.is_empty() {
+        extracted_tools
+    } else {
+        // Both have tools - use the context's merge strategy
+        use crate::convert::request::context::merge_tools_map;
+        merge_tools_map(&response_req.tools, &extracted_tools)
+    };
+
+    let tools = convert_tools(merged_tools);
     let tool_choice = convert_tool_choice(response_req.tool_choice);
 
     // Use model from config if specified, otherwise use provider's model normalization
@@ -98,6 +113,10 @@ pub fn response_to_chat(
         parallel_tool_calls: response_req.parallel_tool_calls,
         seed: None,
         service_tier: None,
+        web_search_options: None,
+        modalities: None,
+        prediction: None,
+        audio: None,
     };
 
     // Apply min_tokens floor validation (some providers reject max_tokens < MIN_MAX_TOKENS).
@@ -166,7 +185,7 @@ mod tests {
         request.instructions = Some("You are a helpful assistant.".to_string());
 
         let provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         let first = chat_req.messages.first().unwrap();
         assert_eq!(first.role, MessageRole::System);
@@ -189,10 +208,11 @@ mod tests {
             call_id: None,
             output: None,
             namespace: None,
+            tools: None,
         }]));
 
         let provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         let msg = chat_req.messages.first().unwrap();
         assert_eq!(msg.role, MessageRole::Assistant);
@@ -216,6 +236,7 @@ mod tests {
                 call_id: None,
                 output: None,
                 namespace: None,
+                tools: None,
             },
             InputItem {
                 id: None,
@@ -227,11 +248,12 @@ mod tests {
                 call_id: Some("call_123".to_string()),
                 output: Some("25 degrees, sunny".to_string()),
                 namespace: None,
+                tools: None,
             },
         ]));
 
         let provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
 
@@ -257,10 +279,11 @@ mod tests {
             call_id: Some("call_orphan".to_string()),
             output: Some("sunny".to_string()),
             namespace: None,
+            tools: None,
         }]));
 
         let provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.messages.len(), 2);
 
         let assistant = &chat_req.messages[0];
@@ -292,6 +315,7 @@ mod tests {
                 call_id: Some("call_1".to_string()),
                 output: None,
                 namespace: None,
+                tools: None,
             },
             InputItem {
                 id: Some("msg_1".to_string()),
@@ -303,6 +327,7 @@ mod tests {
                 call_id: None,
                 output: None,
                 namespace: None,
+                tools: None,
             },
             InputItem {
                 id: Some("fco_1".to_string()),
@@ -314,11 +339,12 @@ mod tests {
                 call_id: Some("call_1".to_string()),
                 output: Some("ok".to_string()),
                 namespace: None,
+                tools: None,
             },
         ]));
 
         let provider = crate::providers::minimax::MiniMaxProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
         let assistant = &chat_req.messages[0];
@@ -350,6 +376,7 @@ mod tests {
                 call_id: Some("call_1".to_string()),
                 output: None,
                 namespace: None,
+                tools: None,
             },
             InputItem {
                 id: Some("msg_1".to_string()),
@@ -361,6 +388,7 @@ mod tests {
                 call_id: None,
                 output: None,
                 namespace: None,
+                tools: None,
             },
             InputItem {
                 id: Some("fco_1".to_string()),
@@ -372,11 +400,12 @@ mod tests {
                 call_id: Some("call_1".to_string()),
                 output: Some("ok".to_string()),
                 namespace: None,
+                tools: None,
             },
         ]));
 
         let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.messages.len(), 3);
         assert_eq!(chat_req.messages[0].role, MessageRole::Assistant);
         assert!(chat_req.messages[0].tool_calls.is_some());
@@ -390,7 +419,7 @@ mod tests {
         request.max_output_tokens = Some(8);
 
         let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.max_tokens, Some(16));
     }
 
@@ -407,11 +436,120 @@ mod tests {
         }];
 
         let provider = crate::providers::kimi::KimiProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         let tools = chat_req.tools.unwrap_or_default();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_type, "function");
         assert_eq!(tools[0].function.name, "web_search_preview");
+    }
+
+    #[test]
+    fn test_tool_search_output_extracts_tools() {
+        let request = make_request(InputItemOrString::Array(vec![
+            InputItem {
+                id: Some("tsc_1".to_string()),
+                item_type: InputItemType::Message,
+                role: Some("user".to_string()),
+                content: Some(ResponseContent::String("Find tools".to_string())),
+                name: None,
+                arguments: None,
+                call_id: None,
+                output: None,
+                namespace: None,
+                tools: None,
+            },
+            InputItem {
+                id: Some("tso_1".to_string()),
+                item_type: InputItemType::ToolSearchOutput,
+                role: None,
+                content: None,
+                name: None,
+                arguments: None,
+                call_id: Some("tsc_call_1".to_string()),
+                output: None,
+                namespace: None,
+                tools: Some(vec![
+                    Tool {
+                        tool_type: ToolType::Function,
+                        name: Some("search_tool".to_string()),
+                        description: Some("A search tool".to_string()),
+                        parameters: Some(serde_json::json!({
+                            "type": "object",
+                            "properties": {}
+                        })),
+                        strict: Some(false),
+                        extra: HashMap::new(),
+                    },
+                    Tool {
+                        tool_type: ToolType::Function,
+                        name: Some("calc_tool".to_string()),
+                        description: Some("A calculator".to_string()),
+                        parameters: Some(serde_json::json!({
+                            "type": "object",
+                            "properties": {}
+                        })),
+                        strict: Some(false),
+                        extra: HashMap::new(),
+                    },
+                ]),
+            },
+        ]));
+
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
+
+        // Should have 2 messages: user message + tool_search_output (no message emitted for tool_search)
+        assert_eq!(chat_req.messages.len(), 1);
+        assert_eq!(chat_req.messages[0].role, MessageRole::User);
+
+        // Tools should be extracted from tool_search_output
+        let tools = chat_req.tools.unwrap_or_default();
+        assert_eq!(tools.len(), 2);
+        let tool_names: Vec<_> = tools.iter().map(|t| t.function.name.clone()).collect();
+        assert!(tool_names.contains(&"search_tool".to_string()));
+        assert!(tool_names.contains(&"calc_tool".to_string()));
+    }
+
+    #[test]
+    fn test_tool_search_output_merges_with_predefined_tools() {
+        let mut request = make_request(InputItemOrString::Array(vec![
+            InputItem {
+                id: Some("tso_1".to_string()),
+                item_type: InputItemType::ToolSearchOutput,
+                role: None,
+                content: None,
+                name: None,
+                arguments: None,
+                call_id: Some("tsc_call_1".to_string()),
+                output: None,
+                namespace: None,
+                tools: Some(vec![Tool {
+                    tool_type: ToolType::Function,
+                    name: Some("search_tool".to_string()),
+                    description: None,
+                    parameters: None,
+                    strict: None,
+                    extra: HashMap::new(),
+                }]),
+            },
+        ]));
+        // Predefined tool with same name - searched tool should override
+        request.tools = vec![Tool {
+            tool_type: ToolType::Function,
+            name: Some("search_tool".to_string()),
+            description: Some("Predefined search".to_string()),
+            parameters: None,
+            strict: None,
+            extra: HashMap::new(),
+        }];
+
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
+
+        let tools = chat_req.tools.unwrap_or_default();
+        assert_eq!(tools.len(), 1);
+        // Searched tool should override predefined (merge_tools_map semantics)
+        assert_eq!(tools[0].function.name, "search_tool");
     }
 
     #[test]
@@ -434,10 +572,11 @@ mod tests {
             call_id: None,
             output: None,
             namespace: None,
+            tools: None,
         }]));
 
         let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert!(!chat_req.messages.is_empty());
         let body = chat_req.messages[0].content.as_text();
         assert!(body.contains("[input_file]"));
@@ -462,7 +601,7 @@ mod tests {
         });
 
         let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         let response_format = chat_req.response_format.expect("response_format should be mapped");
         assert_eq!(response_format["type"], "json_schema");
         assert_eq!(response_format["json_schema"]["name"], "AnswerSchema");
@@ -479,7 +618,7 @@ mod tests {
         request.parallel_tool_calls = Some(false);
 
         let provider = GLMProvider;
-        let chat_req = response_to_chat(request, &provider, None).unwrap();
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(chat_req.parallel_tool_calls, Some(false));
     }
