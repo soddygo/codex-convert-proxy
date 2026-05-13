@@ -19,6 +19,7 @@
 //! - `Merge`: Combine both, with searched tools overriding on name conflicts
 
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use crate::types::response_api::Tool;
 
@@ -34,10 +35,11 @@ pub enum ToolPriority {
     Merge,
 }
 
-impl ToolPriority {
-    /// Parse from string configuration value.
-    pub fn parse_from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl FromStr for ToolPriority {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "prefer_defined" | "prefer-defined" => ToolPriority::PreferDefined,
             "prefer_searched" | "prefer-searched" => ToolPriority::PreferSearched,
             "merge" | "combined" => ToolPriority::Merge,
@@ -48,7 +50,7 @@ impl ToolPriority {
                 );
                 ToolPriority::Merge
             }
-        }
+        })
     }
 }
 
@@ -362,11 +364,11 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_parse_from_str() {
-        assert_eq!(ToolPriority::parse_from_str("prefer_defined"), ToolPriority::PreferDefined);
-        assert_eq!(ToolPriority::parse_from_str("prefer-searched"), ToolPriority::PreferSearched);
-        assert_eq!(ToolPriority::parse_from_str("merge"), ToolPriority::Merge);
-        assert_eq!(ToolPriority::parse_from_str("unknown"), ToolPriority::Merge); // default
+    fn test_priority_from_str() {
+        assert_eq!("prefer_defined".parse::<ToolPriority>(), Ok(ToolPriority::PreferDefined));
+        assert_eq!("prefer-searched".parse::<ToolPriority>(), Ok(ToolPriority::PreferSearched));
+        assert_eq!("merge".parse::<ToolPriority>(), Ok(ToolPriority::Merge));
+        assert_eq!("unknown".parse::<ToolPriority>(), Ok(ToolPriority::Merge)); // default
     }
 
     #[test]
