@@ -302,9 +302,10 @@ impl ProxyHttp for CodexProxy {
                         let model_override = ctx.selected_backend.as_ref()
                             .and_then(|b| b.model.as_deref())
                             .map(|s| s.to_string());
-                        // Parse as ResponseRequest
+                        // Parse as ResponseRequest (single pass: also used to init context)
                         match serde_json::from_slice::<ResponseRequest>(&ctx.request_body) {
                             Ok(mut response_req) => {
+                                ctx.init_from_response_request(&response_req);
                                 let mut previous_messages: Option<Vec<ChatMessage>> = None;
                                 if let Some(prev_id) = response_req.previous_response_id.clone() {
                                     if let Some(snapshot) = self.get_conversation(&prev_id) {
@@ -378,6 +379,10 @@ impl ProxyHttp for CodexProxy {
                                 debug!("Failed to parse as ResponseRequest, keeping original: {}", e);
                                 // Restore original body to let upstream handle the error
                                 *body = Some(Bytes::from(ctx.request_body.clone()));
+                                // Best-effort: try to extract model/stream as raw JSON for logging
+                                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ctx.request_body) {
+                                    ctx.init_from_passthrough_json(&json);
+                                }
                                 // Save full request body to file for debugging
                                 let path = self.log_dir.join("codex_request_body.json");
                                 if std::fs::write(&path, &ctx.request_body).is_ok() {
@@ -386,9 +391,6 @@ impl ProxyHttp for CodexProxy {
                             }
                         }
                     }
-
-                // Parse model name from original request for logging
-                ctx.init_from_request_body();
             }
 
             return Ok(());
@@ -400,9 +402,12 @@ impl ProxyHttp for CodexProxy {
         }
 
         // Only process when we have the complete body
-        if end_of_stream && !ctx.request_body.is_empty() {
-            // Parse model name from original request for logging
-            ctx.init_from_request_body();
+        if end_of_stream
+            && !ctx.request_body.is_empty()
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ctx.request_body)
+        {
+            // Non-conversion path: extract just model/stream for diagnostics
+            ctx.init_from_passthrough_json(&json);
         }
 
         Ok(())

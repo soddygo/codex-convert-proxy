@@ -5,6 +5,7 @@ use std::time::Instant;
 use crate::convert::{ResponseRequestContext, StreamState};
 use crate::config::BackendInfo;
 use crate::types::chat_api::ChatMessage;
+use crate::types::response_api::ResponseRequest;
 
 /// Proxy context attached to each request session.
 #[derive(Debug)]
@@ -75,40 +76,50 @@ impl ProxyContext {
         }
     }
 
-    /// Parse model name and stream flag from request body.
-    /// Initializes StreamState for ALL conversion requests (both streaming and non-streaming).
-    /// StreamState holds ResponseRequestContext for protocol-aligned response generation.
-    pub fn init_from_request_body(&mut self) {
-        if self.model.is_some() {
-            return;
+    /// Populate `model` + streaming flags from a parsed `ResponseRequest`.
+    ///
+    /// Conversion path: callers already deserialize the body as `ResponseRequest`
+    /// to perform the conversion, so we accept the parsed struct directly to
+    /// avoid re-parsing the JSON.
+    pub fn init_from_response_request(&mut self, req: &ResponseRequest) {
+        if self.model.is_none() {
+            self.model = Some(req.model.clone());
         }
-        if let Ok(text) = std::str::from_utf8(&self.request_body)
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                if let Some(model) = json.get("model").and_then(|v| v.as_str()) {
-                    self.model = Some(model.to_string());
-                }
-                if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
-                    self.is_streaming = stream;
-                    if stream {
-                        self.is_stream_response = true;
-                    }
-                }
+        self.is_streaming = req.stream;
+        if req.stream {
+            self.is_stream_response = true;
+        }
 
-                // Always initialize StreamState for conversion requests to hold context
-                // This is used for both streaming and non-streaming conversion
-                if self.is_conversion_request {
-                    let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
-                    // Get response_request_context from the stored request if available
-                    let context = self.stream_state
-                        .as_ref()
-                        .and_then(|s| s.request_context.clone());
-                    self.stream_state = Some(StreamState::new(
-                        format!("resp_{}", uuid::Uuid::new_v4()),
-                        model,
-                        context,
-                    ));
-                }
+        if self.is_conversion_request {
+            let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
+            let context = self
+                .stream_state
+                .as_ref()
+                .and_then(|s| s.request_context.clone());
+            self.stream_state = Some(StreamState::new(
+                format!("resp_{}", uuid::Uuid::new_v4()),
+                model,
+                context,
+            ));
+        }
+    }
+
+    /// Pass-through path: extract just `model` + `stream` from a serde_json::Value.
+    ///
+    /// Used when the body is not a Responses API request (e.g., direct Chat
+    /// Completions pass-through), so a full typed parse would be wrong.
+    pub fn init_from_passthrough_json(&mut self, json: &serde_json::Value) {
+        if self.model.is_none()
+            && let Some(model) = json.get("model").and_then(|v| v.as_str())
+        {
+            self.model = Some(model.to_string());
+        }
+        if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
+            self.is_streaming = stream;
+            if stream {
+                self.is_stream_response = true;
             }
+        }
     }
 
     /// Set the response request context from a parsed ResponseRequest.
