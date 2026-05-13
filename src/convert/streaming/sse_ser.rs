@@ -3,8 +3,12 @@
 use super::events::ResponseStreamEvent;
 use super::state::ResponseRequestContext;
 
-/// Generate SSE string from Response stream event.
-pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
+/// Generate SSE string from a Response stream event.
+///
+/// `sequence_number` is the spec-required monotonic counter; callers should
+/// allocate it from `StreamState::take_sequence_number()` immediately before
+/// invoking this function so events come out in stream order.
+pub fn event_to_sse(event: &ResponseStreamEvent, seq: u64) -> String {
     match event {
         ResponseStreamEvent::Created {
             id,
@@ -19,6 +23,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "type": "response.created",
                     "response": response_stub_json(id, model, status, *created_at, request_context.as_ref()),
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::InProgress {
@@ -34,6 +39,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "type": "response.in_progress",
                     "response": response_stub_json(id, model, status, *created_at, request_context.as_ref()),
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::OutputItemAdded { output_index, item_id, item_type, role, call_id, name } => {
@@ -50,8 +56,15 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             if let Some(n) = name {
                 item.insert("name".to_string(), serde_json::json!(n));
             }
-            if item_type == "message" || item_type == "reasoning" {
+            if item_type == "message" {
                 item.insert("content".to_string(), serde_json::json!([]));
+            }
+            if item_type == "reasoning" {
+                item.insert("summary".to_string(), serde_json::json!([]));
+                item.insert("content".to_string(), serde_json::json!([]));
+            }
+            if item_type == "function_call" {
+                item.insert("arguments".to_string(), serde_json::json!(""));
             }
             sse_event(
                 "response.output_item.added",
@@ -60,6 +73,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "output_index": output_index,
                     "item": serde_json::Value::Object(item),
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ContentPartAdded { item_id, output_index, content_index, part_type } => {
@@ -85,6 +99,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "part": part,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::OutputTextDelta { item_id, output_index, content_index, delta } => {
@@ -96,7 +111,9 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "output_index": output_index,
                     "content_index": content_index,
                     "delta": delta,
+                    "logprobs": [],
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::OutputTextDone {
@@ -113,7 +130,9 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "output_index": output_index,
                     "content_index": content_index,
                     "text": text,
+                    "logprobs": [],
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ContentPartDone {
@@ -145,6 +164,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "part": part,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::OutputItemDone {
@@ -209,6 +229,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "output_index": output_index,
                     "item": serde_json::Value::Object(item),
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ReasoningAdded { output_index, item_id } => {
@@ -220,9 +241,11 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "item": {
                         "id": item_id,
                         "type": "reasoning",
+                        "summary": [],
                         "content": [],
                     },
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ReasoningDelta { item_id, output_index, content_index, delta } => {
@@ -235,6 +258,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "delta": delta,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ReasoningTextDone { item_id, output_index, content_index, text } => {
@@ -247,6 +271,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "text": text,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ReasoningSummaryTextDelta { item_id, output_index, content_index, delta } => {
@@ -259,6 +284,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "delta": delta,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::ReasoningSummaryTextDone { item_id, output_index, content_index, text } => {
@@ -271,30 +297,32 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "text": text,
                 }),
+                seq,
             )
         }
-        ResponseStreamEvent::FunctionCallArgumentsDelta { output_index, item_id, call_id, delta } => {
+        ResponseStreamEvent::FunctionCallArgumentsDelta { output_index, item_id, delta } => {
             sse_event(
                 "response.function_call_arguments.delta",
                 serde_json::json!({
                     "type": "response.function_call_arguments.delta",
                     "output_index": output_index,
                     "item_id": item_id,
-                    "call_id": call_id,
                     "delta": delta,
                 }),
+                seq,
             )
         }
-        ResponseStreamEvent::FunctionCallArgumentsDone { output_index, item_id, call_id, arguments } => {
+        ResponseStreamEvent::FunctionCallArgumentsDone { output_index, item_id, name, arguments } => {
             sse_event(
                 "response.function_call_arguments.done",
                 serde_json::json!({
                     "type": "response.function_call_arguments.done",
                     "output_index": output_index,
                     "item_id": item_id,
-                    "call_id": call_id,
+                    "name": name,
                     "arguments": arguments,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::Completed { response } => {
@@ -304,6 +332,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "type": "response.completed",
                     "response": response,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::Error { id, error_type, message, code } => {
@@ -320,7 +349,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
             if let Some(code) = code {
                 payload["error"]["code"] = serde_json::json!(code);
             }
-            sse_event("response.error", payload)
+            sse_event("response.error", payload, seq)
         }
         ResponseStreamEvent::Failed { id, model, status, created_at } => {
             sse_event(
@@ -329,6 +358,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "type": "response.failed",
                     "response": response_stub_json(id, model, status, *created_at, None),
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::Incomplete { id, model, status, created_at, reason } => {
@@ -342,6 +372,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "type": "response.incomplete",
                     "response": resp,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::RefusalDelta { item_id, output_index, content_index, delta } => {
@@ -354,6 +385,7 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "delta": delta,
                 }),
+                seq,
             )
         }
         ResponseStreamEvent::RefusalDone { item_id, output_index, content_index, refusal } => {
@@ -366,12 +398,19 @@ pub fn event_to_sse(event: &ResponseStreamEvent) -> String {
                     "content_index": content_index,
                     "refusal": refusal,
                 }),
+                seq,
             )
         }
     }
 }
 
-fn sse_event(event_name: &str, payload: serde_json::Value) -> String {
+fn sse_event(event_name: &str, mut payload: serde_json::Value, sequence_number: u64) -> String {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "sequence_number".to_string(),
+            serde_json::json!(sequence_number),
+        );
+    }
     let data = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
     format!("event: {event_name}
 data: {data}
@@ -402,11 +441,32 @@ fn response_stub_json(
     resp["output"] = serde_json::json!([]);
     resp["usage"] = serde_json::Value::Null;
 
+    // Spec `Response.required` mandates these fields be present (possibly null).
+    // Backfill defaults when the request context omitted them so strict SDK clients
+    // can decode the stub even on Failed/Incomplete events (which pass no context).
     if resp.get("text").is_none_or(|v| v.is_null()) {
         resp["text"] = serde_json::json!({"format":{"type":"text"}});
     }
     if resp.get("tools").is_none_or(|v| v.is_null()) {
         resp["tools"] = serde_json::json!([]);
+    }
+    if resp.get("tool_choice").is_none_or(|v| v.is_null()) {
+        resp["tool_choice"] = serde_json::json!("auto");
+    }
+    if resp.get("parallel_tool_calls").is_none_or(|v| v.is_null()) {
+        resp["parallel_tool_calls"] = serde_json::json!(true);
+    }
+    if resp.get("metadata").is_none_or(|v| v.is_null()) {
+        resp["metadata"] = serde_json::json!({});
+    }
+    if !resp.as_object().is_some_and(|o| o.contains_key("instructions")) {
+        resp["instructions"] = serde_json::Value::Null;
+    }
+    if !resp.as_object().is_some_and(|o| o.contains_key("temperature")) {
+        resp["temperature"] = serde_json::Value::Null;
+    }
+    if !resp.as_object().is_some_and(|o| o.contains_key("top_p")) {
+        resp["top_p"] = serde_json::Value::Null;
     }
 
     resp
@@ -426,7 +486,7 @@ mod tests {
             content_index: 0,
             part_type: "output_text".to_string(),
         };
-        let sse = event_to_sse(&event);
+        let sse = event_to_sse(&event, 1);
         assert!(sse.contains("event: response.content_part.added"));
         assert!(sse.contains(r#""part":{"#));
         assert!(sse.contains(r#""type":"output_text""#));
@@ -441,7 +501,7 @@ mod tests {
             content_index: 0,
             text: "hello".to_string(),
         };
-        let sse = event_to_sse(&event);
+        let sse = event_to_sse(&event, 1);
         assert!(sse.contains("event: response.output_text.done"));
         assert!(sse.contains(r#""text":"hello""#));
     }
@@ -460,7 +520,7 @@ mod tests {
             refusal: Some("Not allowed".to_string()),
             summary: None,
         };
-        let sse = event_to_sse(&event);
+        let sse = event_to_sse(&event, 1);
         assert!(sse.contains("event: response.output_item.done"));
         assert!(sse.contains(r#""type":"refusal""#));
         assert!(sse.contains(r#""refusal":"Not allowed""#));
@@ -508,6 +568,132 @@ mod tests {
         let ctx = ResponseRequestContext::from(&req);
         let metadata = ctx.metadata.unwrap_or_default();
         assert!(metadata.contains_key("x_proxy_tool_map"));
+    }
+
+    #[test]
+    fn test_every_event_carries_sequence_number() {
+        // Spec requires `sequence_number` on every Responses streaming event.
+        let cases: Vec<(ResponseStreamEvent, &str)> = vec![
+            (
+                ResponseStreamEvent::OutputTextDelta {
+                    item_id: "msg_1".into(),
+                    output_index: 0,
+                    content_index: 0,
+                    delta: "hi".into(),
+                },
+                "response.output_text.delta",
+            ),
+            (
+                ResponseStreamEvent::FunctionCallArgumentsDone {
+                    output_index: 0,
+                    item_id: "fc_1".into(),
+                    name: "get_weather".into(),
+                    arguments: "{}".into(),
+                },
+                "response.function_call_arguments.done",
+            ),
+            (
+                ResponseStreamEvent::RefusalDelta {
+                    item_id: "msg_1".into(),
+                    output_index: 0,
+                    content_index: 0,
+                    delta: "no".into(),
+                },
+                "response.refusal.delta",
+            ),
+        ];
+        for (event, event_name) in cases {
+            let sse = event_to_sse(&event, 42);
+            assert!(sse.contains(&format!("event: {event_name}")));
+            assert!(
+                sse.contains(r#""sequence_number":42"#),
+                "missing sequence_number for {event_name}: {sse}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_output_text_events_include_logprobs() {
+        let delta = ResponseStreamEvent::OutputTextDelta {
+            item_id: "msg".into(),
+            output_index: 0,
+            content_index: 0,
+            delta: "hi".into(),
+        };
+        let sse = event_to_sse(&delta, 1);
+        assert!(sse.contains(r#""logprobs":[]"#), "delta missing logprobs: {sse}");
+
+        let done = ResponseStreamEvent::OutputTextDone {
+            item_id: "msg".into(),
+            output_index: 0,
+            content_index: 0,
+            text: "hi".into(),
+        };
+        let sse = event_to_sse(&done, 2);
+        assert!(sse.contains(r#""logprobs":[]"#), "done missing logprobs: {sse}");
+    }
+
+    #[test]
+    fn test_function_call_arguments_done_uses_name_not_call_id() {
+        let event = ResponseStreamEvent::FunctionCallArgumentsDone {
+            output_index: 0,
+            item_id: "fc_1".into(),
+            name: "lookup".into(),
+            arguments: r#"{"q":"x"}"#.into(),
+        };
+        let sse = event_to_sse(&event, 1);
+        assert!(sse.contains(r#""name":"lookup""#), "missing name: {sse}");
+        assert!(!sse.contains(r#""call_id""#), "stray call_id: {sse}");
+    }
+
+    #[test]
+    fn test_output_item_added_function_call_has_arguments() {
+        let event = ResponseStreamEvent::OutputItemAdded {
+            output_index: 0,
+            item_id: "fc_1".into(),
+            item_type: "function_call".into(),
+            role: None,
+            call_id: Some("call_x".into()),
+            name: Some("lookup".into()),
+        };
+        let sse = event_to_sse(&event, 1);
+        assert!(sse.contains(r#""arguments":"""#), "missing empty arguments: {sse}");
+    }
+
+    #[test]
+    fn test_reasoning_added_has_summary_array() {
+        let event = ResponseStreamEvent::ReasoningAdded {
+            output_index: 0,
+            item_id: "rs_1".into(),
+        };
+        let sse = event_to_sse(&event, 1);
+        assert!(sse.contains(r#""summary":[]"#), "missing summary: {sse}");
+    }
+
+    #[test]
+    fn test_response_stub_json_backfills_required_fields_when_no_context() {
+        // Failed/Incomplete events pass None for request_context; the stub must still
+        // satisfy Response.required (tools, parallel_tool_calls, metadata, tool_choice,
+        // instructions, temperature, top_p).
+        let value = response_stub_json("resp_1", "gpt-x", "failed", 0, None);
+        let obj = value.as_object().expect("stub is object");
+        for key in [
+            "tools",
+            "parallel_tool_calls",
+            "metadata",
+            "tool_choice",
+            "instructions",
+            "temperature",
+            "top_p",
+            "error",
+            "incomplete_details",
+        ] {
+            assert!(obj.contains_key(key), "stub missing required key {key}");
+        }
+        assert_eq!(value.get("parallel_tool_calls"), Some(&serde_json::json!(true)));
+        assert_eq!(value.get("tool_choice"), Some(&serde_json::json!("auto")));
+        assert_eq!(value.get("metadata"), Some(&serde_json::json!({})));
+        assert_eq!(value.get("tools"), Some(&serde_json::json!([])));
     }
 
     #[test]

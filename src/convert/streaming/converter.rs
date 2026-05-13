@@ -247,14 +247,11 @@ pub fn chat_chunk_to_response_events(
                             chat_api_index: tc.index,
                             last_args_len: initial_args.len(),
                         };
-                        let call_id = tc_state.call_id.clone();
-
                         state.current_tool_calls.push(tc_state);
 
                         events.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
                             output_index: func_output_index,
                             item_id: func_id,
-                            call_id: Some(call_id),
                             delta: initial_args,
                         });
                         tracing::debug!("[TOOL_CALL] Emitted OutputItemAdded and FunctionCallArgumentsDelta, total events now: {}", events.len());
@@ -278,7 +275,6 @@ pub fn chat_chunk_to_response_events(
                                 events.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
                                     output_index: tc_state.output_index,
                                     item_id: tc_state.id.clone(),
-                                    call_id: Some(tc_state.call_id.clone()),
                                     delta: new_delta,
                                 });
                             }
@@ -340,7 +336,7 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
         events.push(ResponseStreamEvent::FunctionCallArgumentsDone {
             output_index: tc_state.output_index,
             item_id: tc_state.id.clone(),
-            call_id: tc_state.call_id.clone(),
+            name: tc_state.name.clone(),
             arguments: tc_state.arguments.clone(),
         });
         events.push(ResponseStreamEvent::OutputItemDone {

@@ -2,7 +2,8 @@
 
 use crate::error::ConversionError;
 use crate::types::chat_api::{
-    ChatMessage, Content, ContentBlock, FunctionCall, MessageRole, ToolCall,
+    ChatMessage, Content, ContentBlock, FunctionCall, ImageUrlField, ImageUrlObject, MessageRole,
+    ToolCall,
 };
 use crate::types::response_api::{
     Content as ResponseContent, ContentPart, InputItemOrString,
@@ -59,7 +60,20 @@ pub fn convert_input_to_messages(
                             Some("system") => MessageRole::System,
                             Some("assistant") => MessageRole::Assistant,
                             Some("tool") => MessageRole::Tool,
-                            _ => MessageRole::User,
+                            Some("user") | None => MessageRole::User,
+                            Some(other) => {
+                                return Err(ConversionError::InvalidFormat(format!(
+                                    "unsupported message role: {other}"
+                                )));
+                            }
+                        };
+
+                        // tool_call_id is only valid on role=tool per Chat API spec
+                        // (ChatCompletionRequestToolMessage). Avoid leaking it to other roles.
+                        let tool_call_id_for_msg = if matches!(role, MessageRole::Tool) {
+                            item.call_id.clone()
+                        } else {
+                            None
                         };
 
                         let content = extract_content(&item.content)?;
@@ -79,7 +93,7 @@ pub fn convert_input_to_messages(
                                     name: item.name,
                                     annotations: None,
                                     tool_calls: Some(tool_calls),
-                                    tool_call_id: item.call_id,
+                                    tool_call_id: tool_call_id_for_msg.clone(),
                                     function_call: None,
                                     refusal: None,
                                 });
@@ -112,7 +126,7 @@ pub fn convert_input_to_messages(
                             name: item.name,
                             annotations: None,
                             tool_calls: None,
-                            tool_call_id: item.call_id,
+                            tool_call_id: tool_call_id_for_msg,
                             function_call: None,
                             refusal: None,
                         });
@@ -261,7 +275,9 @@ pub fn extract_content(content: &Option<ResponseContent>) -> Result<Content, Con
                     ContentPart::InputImage { image_url } => blocks.push(ContentBlock {
                         block_type: "image_url".to_string(),
                         text: None,
-                        image_url: Some(image_url.clone().into()),
+                        image_url: Some(ImageUrlField::Object(ImageUrlObject {
+                            url: image_url.clone(),
+                        })),
                     }),
                     ContentPart::InputFile { file_url, file_id } => {
                         let file_ref = file_url
@@ -287,5 +303,48 @@ pub fn extract_content(content: &Option<ResponseContent>) -> Result<Content, Con
             }
         }
         None => Ok(Content::String(String::new())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::response_api::{Content as ResponseContent, ContentPart};
+
+    #[test]
+    fn test_extract_content_image_url_serializes_as_object() {
+        // OpenAI `ChatCompletionRequestMessageContentPartImage.image_url` is a
+        // required object `{url, detail?}`, not a string.
+        let content = ResponseContent::Array(vec![
+            ContentPart::InputText { text: "see this:".into() },
+            ContentPart::InputImage { image_url: "https://example.com/x.png".into() },
+        ]);
+        let chat_content = extract_content(&Some(content)).unwrap();
+        let json = serde_json::to_value(&chat_content).unwrap();
+        let arr = json.as_array().expect("array content");
+        let image_block = arr
+            .iter()
+            .find(|b| b["type"] == "image_url")
+            .expect("image_url block present");
+        assert!(image_block["image_url"].is_object(), "image_url must be object: {image_block}");
+        assert_eq!(image_block["image_url"]["url"], "https://example.com/x.png");
+    }
+
+    #[test]
+    fn test_unknown_role_returns_error() {
+        let input = InputItemOrString::Array(vec![crate::types::response_api::InputItem {
+            id: None,
+            item_type: crate::types::response_api::InputItemType::Message,
+            role: Some("alien".to_string()),
+            content: Some(ResponseContent::String("hi".into())),
+            name: None,
+            arguments: None,
+            call_id: None,
+            output: None,
+            namespace: None,
+        }]);
+        let err = convert_input_to_messages(input, None, false)
+            .expect_err("unknown role must fail");
+        assert!(matches!(err, ConversionError::InvalidFormat(_)));
     }
 }

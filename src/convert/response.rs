@@ -218,18 +218,27 @@ pub fn chat_to_response_with_context(
         max_tool_calls: None,
         input: None,  // Input not available in non-streaming context
         output: outputs,
-        parallel_tool_calls: request_context.and_then(|ctx| ctx.parallel_tool_calls),
+        // Spec default: parallel_tool_calls=true. Honor request context when present.
+        parallel_tool_calls: request_context
+            .and_then(|ctx| ctx.parallel_tool_calls)
+            .unwrap_or(true),
         previous_response_id: request_context.and_then(|ctx| ctx.previous_response_id.clone()),
         reasoning: request_context.and_then(|ctx| ctx.reasoning.clone()),
         store: request_context.and_then(|ctx| ctx.store),
         temperature: request_context.and_then(|ctx| ctx.temperature),
         text: request_context.and_then(|ctx| ctx.text.clone()).or(default_text),
-        tool_choice: request_context.map(|ctx| ctx.tool_choice.clone()),
-        tools: request_context.map(|ctx| ctx.tools.clone()),
+        tool_choice: request_context
+            .map(|ctx| ctx.tool_choice.clone())
+            .unwrap_or_default(),
+        tools: request_context
+            .map(|ctx| ctx.tools.clone())
+            .unwrap_or_default(),
         top_p: request_context.and_then(|ctx| ctx.top_p),
         truncation: request_context.and_then(|ctx| ctx.truncation.clone()),
         user: request_context.and_then(|ctx| ctx.user.clone()),
-        metadata: request_context.and_then(|ctx| ctx.metadata.clone()),
+        metadata: request_context
+            .and_then(|ctx| ctx.metadata.clone())
+            .unwrap_or_default(),
         service_tier: None,
         top_logprobs: None,
         usage,

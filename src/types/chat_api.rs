@@ -166,6 +166,9 @@ pub struct FunctionDefinition {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<serde_json::Value>,
+    /// Whether to enable strict schema adherence; per OpenAI `FunctionObject`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// Tool choice for Chat API.
@@ -173,7 +176,7 @@ pub struct FunctionDefinition {
 #[serde(untagged)]
 pub enum ChatToolChoice {
     Mode(ChatToolChoiceMode),
-    Function(FunctionChoice),
+    Named(NamedToolChoice),
 }
 
 /// Tool choice mode.
@@ -185,7 +188,15 @@ pub enum ChatToolChoiceMode {
     Required,
 }
 
-/// Function choice for tool choice.
+/// OpenAI-compliant named tool choice: `{type:"function", function:{name}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamedToolChoice {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: FunctionChoice,
+}
+
+/// Function choice payload (named-tool-choice inner object).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct FunctionChoice {

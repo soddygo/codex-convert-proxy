@@ -111,14 +111,13 @@ pub enum ResponseStreamEvent {
     FunctionCallArgumentsDelta {
         output_index: u32,
         item_id: String,
-        call_id: Option<String>,
         delta: String,
     },
     /// Function call arguments done.
     FunctionCallArgumentsDone {
         output_index: u32,
         item_id: String,
-        call_id: String,
+        name: String,
         arguments: String,
     },
     /// Response completed with final object.

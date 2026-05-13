@@ -4,17 +4,21 @@ mod messages;
 mod tools;
 
 pub use messages::{convert_input_to_messages, extract_content};
-pub use tools::{convert_tools, convert_tool_choice, is_tool_choice_none};
+pub use tools::{convert_tools, convert_tool_choice};
 
 use crate::constants::MIN_MAX_TOKENS;
 use crate::error::ConversionError;
 use crate::providers::Provider;
 use crate::types::chat_api::{ChatRequest, StreamOptions};
 use crate::types::response_api::{ResponseRequest, ResponseTextConfig};
-use tracing::debug;
+use tracing::{debug, warn};
 
-fn to_chat_response_format(text: Option<&ResponseTextConfig>) -> Option<serde_json::Value> {
-    let format = text.and_then(|t| t.format.as_ref())?;
+fn to_chat_response_format(
+    text: Option<&ResponseTextConfig>,
+) -> Result<Option<serde_json::Value>, ConversionError> {
+    let Some(format) = text.and_then(|t| t.format.as_ref()) else {
+        return Ok(None);
+    };
     match format.format_type.as_str() {
         "json_schema" => {
             let mut json_schema = serde_json::json!({
@@ -24,20 +28,20 @@ fn to_chat_response_format(text: Option<&ResponseTextConfig>) -> Option<serde_js
             if let Some(strict) = format.strict {
                 json_schema["strict"] = serde_json::json!(strict);
             }
-            Some(serde_json::json!({
+            Ok(Some(serde_json::json!({
                 "type": "json_schema",
                 "json_schema": json_schema
-            }))
+            })))
         }
-        "json_object" => Some(serde_json::json!({
+        "json_object" => Ok(Some(serde_json::json!({
             "type": "json_object"
-        })),
-        "text" => Some(serde_json::json!({
+        }))),
+        "text" => Ok(Some(serde_json::json!({
             "type": "text"
-        })),
-        other => Some(serde_json::json!({
-            "type": other
-        })),
+        }))),
+        other => Err(ConversionError::InvalidFormat(format!(
+            "unsupported text.format.type: {other}"
+        ))),
     }
 }
 
@@ -61,12 +65,17 @@ pub fn response_to_chat(
         .map(|s| s.to_string())
         .unwrap_or_else(|| provider.normalize_model(response_req.model));
 
-    // Apply provider-specific transformations
+    let response_format = to_chat_response_format(response_req.text.as_ref())?;
+
+    // Apply provider-specific transformations.
+    // Tools: pass through even when empty `vec![]` so we don't violate provider expectations on
+    //   schema; serializer skips when None. We filter empty to None to mirror Chat API idiom.
+    // tool_choice: pass through "none" honoring user intent (spec allows "none" mode).
     let mut chat_req = ChatRequest {
         model,
         messages,
         tools: Some(tools).filter(|t| !t.is_empty()),
-        tool_choice: Some(tool_choice).filter(|tc| !is_tool_choice_none(tc)),
+        tool_choice: Some(tool_choice),
         stream: Some(response_req.stream),
         temperature: response_req.temperature,
         max_tokens: response_req.max_output_tokens.or(response_req.max_tokens),
@@ -84,16 +93,21 @@ pub fn response_to_chat(
         top_logprobs: None,
         n: None,
         stop: None,
-        response_format: to_chat_response_format(response_req.text.as_ref()),
+        response_format,
         reasoning_effort: response_req.reasoning.as_ref().and_then(|r| r.effort.clone()),
         parallel_tool_calls: response_req.parallel_tool_calls,
         seed: None,
         service_tier: None,
     };
 
-    // Apply min_tokens floor validation (some providers reject max_tokens < MIN_MAX_TOKENS)
+    // Apply min_tokens floor validation (some providers reject max_tokens < MIN_MAX_TOKENS).
+    // Surface as a warn so the silent mutation is observable in logs.
     if let Some(max_tokens) = chat_req.max_tokens
         && max_tokens < MIN_MAX_TOKENS {
+            warn!(
+                "[REQUEST_CONVERT] max_tokens {} below floor {}; raising to floor",
+                max_tokens, MIN_MAX_TOKENS
+            );
             chat_req.max_tokens = Some(MIN_MAX_TOKENS);
         }
 

@@ -50,6 +50,8 @@ pub struct StreamState {
     pub incomplete_reason: Option<String>,
     /// Refusal text accumulated from streaming deltas.
     pub refusal_text: String,
+    /// Monotonic sequence counter for SSE events (spec-required `sequence_number`).
+    pub next_sequence_number: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -168,7 +170,15 @@ impl StreamState {
             final_status: "completed".to_string(),
             incomplete_reason: None,
             refusal_text: String::new(),
+            next_sequence_number: 0,
         }
+    }
+
+    /// Allocate and return the next sequence number, then advance the counter.
+    pub fn take_sequence_number(&mut self) -> u64 {
+        let n = self.next_sequence_number;
+        self.next_sequence_number = self.next_sequence_number.saturating_add(1);
+        n
     }
 
     /// Update usage from a ChatStreamChunk.
@@ -315,10 +325,12 @@ impl StreamState {
             max_tool_calls: None,
             input: None,
             output,
+            // Spec default: parallel_tool_calls=true when request didn't specify.
             parallel_tool_calls: self
                 .request_context
                 .as_ref()
-                .and_then(|ctx| ctx.parallel_tool_calls),
+                .and_then(|ctx| ctx.parallel_tool_calls)
+                .unwrap_or(true),
             previous_response_id: self
                 .request_context
                 .as_ref()
@@ -349,11 +361,13 @@ impl StreamState {
             tool_choice: self
                 .request_context
                 .as_ref()
-                .map(|ctx| ctx.tool_choice.clone()),
+                .map(|ctx| ctx.tool_choice.clone())
+                .unwrap_or_default(),
             tools: self
                 .request_context
                 .as_ref()
-                .map(|ctx| ctx.tools.clone()),
+                .map(|ctx| ctx.tools.clone())
+                .unwrap_or_default(),
             top_p: self.request_context.as_ref().and_then(|ctx| ctx.top_p),
             truncation: self
                 .request_context
@@ -366,7 +380,8 @@ impl StreamState {
             metadata: self
                 .request_context
                 .as_ref()
-                .and_then(|ctx| ctx.metadata.clone()),
+                .and_then(|ctx| ctx.metadata.clone())
+                .unwrap_or_default(),
             service_tier: None,
             top_logprobs: None,
             usage,

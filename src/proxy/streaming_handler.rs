@@ -202,7 +202,8 @@ impl<'a> StreamingResponseHandler<'a> {
                     let completed_event = ResponseStreamEvent::Completed {
                         response: response_obj,
                     };
-                    let sse_data = event_to_sse(&completed_event);
+                    let seq = state.take_sequence_number();
+                    let sse_data = event_to_sse(&completed_event, seq);
                     converted_chunks.push(sse_data);
                     // Append SSE [DONE] marker to signal stream end
                     converted_chunks.push("data: [DONE]\n\n".to_string());
@@ -232,10 +233,11 @@ impl<'a> StreamingResponseHandler<'a> {
 
             match chat_chunk_to_response_events(chunk, state) {
                 Ok(events) => {
-                    let sse_data: String = events
-                        .iter()
-                        .map(event_to_sse)
-                        .collect();
+                    let mut sse_data = String::new();
+                    for event in &events {
+                        let seq = state.take_sequence_number();
+                        sse_data.push_str(&event_to_sse(event, seq));
+                    }
                     if !sse_data.is_empty() {
                         debug!("[STREAM_CHUNK] {}", sse_data);
                         converted_chunks.push(sse_data);

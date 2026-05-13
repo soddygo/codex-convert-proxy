@@ -4,6 +4,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+fn default_true() -> bool {
+    true
+}
+
 /// Root request type for Responses API (Codex → Proxy)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -333,6 +337,12 @@ pub enum ResponseAnnotation {
 }
 
 /// Response object (Responses API format).
+///
+/// Per the official OpenAPI spec (`Response.required`), the following fields must
+/// be present in the serialized JSON even when their value is null/empty:
+/// `error, incomplete_details, instructions, tools, parallel_tool_calls, metadata,
+/// tool_choice, temperature, top_p`. We therefore avoid `skip_serializing_if` on
+/// those fields (or use concrete non-Option types with sane defaults).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ResponseObject {
@@ -342,13 +352,10 @@ pub struct ResponseObject {
     pub model: String,
     pub created_at: i64,
     pub completed_at: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub incomplete_details: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
@@ -357,30 +364,28 @@ pub struct ResponseObject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<Vec<serde_json::Value>>,
     pub output: Vec<ResponseOutputItem>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parallel_tool_calls: Option<bool>,
+    #[serde(default = "default_true")]
+    pub parallel_tool_calls: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoning>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<ResponseTextConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ToolChoice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Tool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub tool_choice: ToolChoice,
+    #[serde(default)]
+    pub tools: Vec<Tool>,
     pub top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
