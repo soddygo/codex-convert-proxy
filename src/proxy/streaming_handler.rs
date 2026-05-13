@@ -55,12 +55,12 @@ impl<'a> StreamingResponseHandler<'a> {
     pub fn process_stream_frame(&mut self) -> Option<String> {
         // Use accumulated body for SSE parsing (events may span multiple frames)
         // Only parse from the last parsed offset to avoid re-processing events
-        let text = std::str::from_utf8(&self.ctx.response_body).unwrap_or("");
-        let unparsed_text = &text[self.ctx.stream_body_parsed_offset..];
+        let text = std::str::from_utf8(&self.ctx.buffers.response_body).unwrap_or("");
+        let unparsed_text = &text[self.ctx.buffers.stream_body_parsed_offset..];
 
         debug!(
             "[STREAM_RAW] is_streaming=true, body={}",
-            String::from_utf8_lossy(&self.ctx.response_body)
+            String::from_utf8_lossy(&self.ctx.buffers.response_body)
                 .chars()
                 .take(200)
                 .collect::<String>()
@@ -74,7 +74,7 @@ impl<'a> StreamingResponseHandler<'a> {
         debug!(
             "[STREAM_PARSE] Found {} new SSE events (offset={}, parse_end={})",
             new_events_count,
-            self.ctx.stream_body_parsed_offset,
+            self.ctx.buffers.stream_body_parsed_offset,
             parse_end_pos
         );
 
@@ -87,7 +87,7 @@ impl<'a> StreamingResponseHandler<'a> {
             // Parse as ChatStreamChunk
             match serde_json::from_str::<ChatStreamChunk>(&event.data) {
                 Ok(chunk) => {
-                    self.ctx.stream_chunks_parsed += 1;
+                    self.ctx.diagnostics.stream_chunks_parsed += 1;
                     let mut chunk = chunk;
 
                     // Apply provider transformation
@@ -105,17 +105,17 @@ impl<'a> StreamingResponseHandler<'a> {
         // Update the parse offset to avoid re-parsing on next frame
         // Use parse_end_pos (relative to unparsed_text) to calculate absolute position
         if new_events_count > 0 {
-            self.ctx.stream_body_parsed_offset += parse_end_pos;
+            self.ctx.buffers.stream_body_parsed_offset += parse_end_pos;
         }
 
         // Compact parsed prefix periodically to keep streaming memory bounded.
-        if self.ctx.stream_body_parsed_offset >= crate::constants::STREAM_PARSE_COMPACT_THRESHOLD {
-            self.ctx.response_body.drain(..self.ctx.stream_body_parsed_offset);
+        if self.ctx.buffers.stream_body_parsed_offset >= crate::constants::STREAM_PARSE_COMPACT_THRESHOLD {
+            self.ctx.buffers.response_body.drain(..self.ctx.buffers.stream_body_parsed_offset);
             debug!(
                 "[STREAM_PARSE] compacted parsed prefix bytes={}",
-                self.ctx.stream_body_parsed_offset
+                self.ctx.buffers.stream_body_parsed_offset
             );
-            self.ctx.stream_body_parsed_offset = 0;
+            self.ctx.buffers.stream_body_parsed_offset = 0;
         }
 
         if !converted_chunks.is_empty() {
@@ -134,16 +134,16 @@ impl<'a> StreamingResponseHandler<'a> {
 
         if let Some(ref mut state) = self.ctx.stream_state
             && !state.is_completed {
-                if self.ctx.stream_chunks_parsed == 0 {
+                if self.ctx.diagnostics.stream_chunks_parsed == 0 {
                     warn!(
                         "[STREAM_COMPLETE_SKIP] skip response.completed because no valid upstream chunks were parsed (status={:?}, content_type={:?})",
-                        self.ctx.upstream_status,
-                        self.ctx.upstream_content_type
+                        self.ctx.diagnostics.upstream_status,
+                        self.ctx.diagnostics.upstream_content_type
                     );
                     state.is_completed = true;
                 } else {
                     let response_obj = state.build_response_object();
-                    if let Some(mut messages) = self.ctx.pending_conversation_messages.clone() {
+                    if let Some(mut messages) = self.ctx.follow_up.pending_conversation_messages.clone() {
                         let assistant_tool_calls: Vec<ToolCall> = state
                             .completed_tool_calls
                             .iter()
@@ -181,7 +181,7 @@ impl<'a> StreamingResponseHandler<'a> {
                         self.conversation_store.insert(
                             response_obj.id.clone(),
                             ConversationSnapshot {
-                                instructions: self.ctx.pending_instructions.clone(),
+                                instructions: self.ctx.follow_up.pending_instructions.clone(),
                                 messages,
                             },
                         );
@@ -193,7 +193,7 @@ impl<'a> StreamingResponseHandler<'a> {
                         state.is_reasoning_added,
                         state.is_output_item_added,
                         state.completed_tool_calls.len(),
-                        self.ctx.stream_chunks_parsed
+                        self.ctx.diagnostics.stream_chunks_parsed
                     );
                     if self.log_body
                         && let Ok(json) = serde_json::to_string(&response_obj) {

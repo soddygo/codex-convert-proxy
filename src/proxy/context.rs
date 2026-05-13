@@ -1,4 +1,22 @@
 //! Proxy context data structures.
+//!
+//! The per-request `ProxyContext` composes several single-responsibility
+//! sub-structs so each cluster of related fields can be reasoned about (and
+//! initialised) independently:
+//!
+//! - [`RouteInfo`] — backend selection + path rewriting (populated in
+//!   `request_filter`).
+//! - [`ConversionFlags`] — boolean state machine that drives whether and how
+//!   bodies are converted.
+//! - [`ConversionBuffers`] — buffered request/response bodies + stream parse
+//!   cursor.
+//! - [`UpstreamDiagnostics`] — observed upstream status / content-type / chunk
+//!   count, kept for logging and bypass decisions.
+//! - [`FollowUpContext`] — conversation messages we'll persist after the
+//!   upstream completes (for `previous_response_id` expansion).
+//!
+//! The root keeps only fields that don't fit any cluster: `start_time`,
+//! `model`, and the streaming `StreamState`.
 
 use std::time::Instant;
 
@@ -7,47 +25,90 @@ use crate::config::BackendInfo;
 use crate::types::chat_api::ChatMessage;
 use crate::types::response_api::ResponseRequest;
 
+/// Backend selection and request-path information.
+#[derive(Debug, Default)]
+pub struct RouteInfo {
+    /// Selected backend connection info.
+    pub selected_backend: Option<BackendInfo>,
+    /// Backend / provider name (cached for diagnostics after the backend
+    /// reference is no longer convenient to hold).
+    pub provider_name: Option<String>,
+    /// Request path after optional `path_prefix` stripping.
+    pub normalized_path: Option<String>,
+    /// Rewritten upstream path (includes backend's base_path).
+    pub rewritten_path: Option<String>,
+}
+
+/// Boolean state machine that records what kind of conversion is in flight.
+#[derive(Debug, Default)]
+pub struct ConversionFlags {
+    /// True if the original request targets `/v1/responses` (or `/responses`)
+    /// and must be converted to a Chat-API request.
+    pub is_conversion_request: bool,
+    /// True if the client requested streaming (`stream: true`).
+    pub is_streaming: bool,
+    /// True if the upstream is producing a streaming response. Usually equal
+    /// to `is_streaming` but retained as a separate flag for clarity around
+    /// upstream content-type detection.
+    pub is_stream_response: bool,
+    /// True only after `response_filter` confirmed the upstream is producing
+    /// SSE we should convert. Drives `response_body_filter`'s streaming path.
+    pub should_convert_stream_response: bool,
+}
+
+/// Buffered request/response bodies and the stream-parse cursor.
+#[derive(Debug, Default)]
+pub struct ConversionBuffers {
+    /// Collected request body bytes (cleared after conversion).
+    pub request_body: Vec<u8>,
+    /// Collected response body bytes (for non-streaming conversion + stream
+    /// frame accumulation).
+    pub response_body: Vec<u8>,
+    /// Offset in `response_body` that has already been parsed, so SSE event
+    /// reparsing across chunks is bounded.
+    pub stream_body_parsed_offset: usize,
+}
+
+/// Upstream observations for diagnostics + bypass decisions.
+#[derive(Debug, Default)]
+pub struct UpstreamDiagnostics {
+    /// Status code captured in `response_filter`.
+    pub upstream_status: Option<u16>,
+    /// `content-type` captured in `response_filter`.
+    pub upstream_content_type: Option<String>,
+    /// Count of valid upstream stream chunks parsed (drives "skip
+    /// response.completed" bypass when zero).
+    pub stream_chunks_parsed: usize,
+}
+
+/// Information needed to persist a completed turn for subsequent
+/// `previous_response_id` lookups.
+#[derive(Debug, Default)]
+pub struct FollowUpContext {
+    /// Conversation messages collected before the upstream response (so the
+    /// assistant reply can be appended to them and stored).
+    pub pending_conversation_messages: Option<Vec<ChatMessage>>,
+    /// Effective instructions used for this turn (after history expansion).
+    pub pending_instructions: Option<String>,
+}
+
 /// Proxy context attached to each request session.
 #[derive(Debug)]
 pub struct ProxyContext {
     /// Request start time for duration tracking.
     pub start_time: Instant,
-    /// Collected request body bytes.
-    pub request_body: Vec<u8>,
     /// Model name parsed from request.
     pub model: Option<String>,
-    /// Selected backend for this request.
-    pub selected_backend: Option<BackendInfo>,
-    /// Provider name.
-    pub provider_name: Option<String>,
-    /// Stream state for SSE conversion (also used for non-streaming conversion context).
+    /// Stream state for SSE conversion (also used as a carrier for
+    /// `ResponseRequestContext` in non-streaming conversions; this dual use is
+    /// scheduled to be decoupled in a follow-up commit).
     pub stream_state: Option<StreamState>,
-    /// Response body collected for conversion.
-    pub response_body: Vec<u8>,
-    /// Whether streaming is enabled.
-    pub is_streaming: bool,
-    /// Rewritten upstream path.
-    pub rewritten_path: Option<String>,
-    /// Whether this is a streaming response (for conversion tracking).
-    pub is_stream_response: bool,
-    /// Whether this is a conversion request (Responses API -> Chat API).
-    pub is_conversion_request: bool,
-    /// Offset in response_body that has been parsed (to avoid re-parsing events).
-    pub stream_body_parsed_offset: usize,
-    /// Request path after optional routing prefix stripping.
-    pub normalized_path: Option<String>,
-    /// Whether current upstream response should be converted as SSE stream.
-    pub should_convert_stream_response: bool,
-    /// Upstream status code captured in response_filter for diagnostics.
-    pub upstream_status: Option<u16>,
-    /// Upstream content-type captured in response_filter for diagnostics.
-    pub upstream_content_type: Option<String>,
-    /// Number of valid upstream chat stream chunks parsed.
-    pub stream_chunks_parsed: usize,
-    /// Conversation messages before upstream response (for follow-up turn storage).
-    pub pending_conversation_messages: Option<Vec<ChatMessage>>,
-    /// Effective instructions used for this request after previous_response expansion.
-    pub pending_instructions: Option<String>,
+
+    pub route: RouteInfo,
+    pub flags: ConversionFlags,
+    pub buffers: ConversionBuffers,
+    pub diagnostics: UpstreamDiagnostics,
+    pub follow_up: FollowUpContext,
 }
 
 impl ProxyContext {
@@ -55,24 +116,13 @@ impl ProxyContext {
     pub fn new() -> Self {
         Self {
             start_time: Instant::now(),
-            request_body: Vec::new(),
             model: None,
-            selected_backend: None,
-            provider_name: None,
             stream_state: None,
-            response_body: Vec::new(),
-            is_streaming: false,
-            rewritten_path: None,
-            is_stream_response: false,
-            is_conversion_request: false,
-            stream_body_parsed_offset: 0,
-            normalized_path: None,
-            should_convert_stream_response: false,
-            upstream_status: None,
-            upstream_content_type: None,
-            stream_chunks_parsed: 0,
-            pending_conversation_messages: None,
-            pending_instructions: None,
+            route: RouteInfo::default(),
+            flags: ConversionFlags::default(),
+            buffers: ConversionBuffers::default(),
+            diagnostics: UpstreamDiagnostics::default(),
+            follow_up: FollowUpContext::default(),
         }
     }
 
@@ -85,12 +135,12 @@ impl ProxyContext {
         if self.model.is_none() {
             self.model = Some(req.model.clone());
         }
-        self.is_streaming = req.stream;
+        self.flags.is_streaming = req.stream;
         if req.stream {
-            self.is_stream_response = true;
+            self.flags.is_stream_response = true;
         }
 
-        if self.is_conversion_request {
+        if self.flags.is_conversion_request {
             let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
             let context = self
                 .stream_state
@@ -115,9 +165,9 @@ impl ProxyContext {
             self.model = Some(model.to_string());
         }
         if let Some(stream) = json.get("stream").and_then(|v| v.as_bool()) {
-            self.is_streaming = stream;
+            self.flags.is_streaming = stream;
             if stream {
-                self.is_stream_response = true;
+                self.flags.is_stream_response = true;
             }
         }
     }

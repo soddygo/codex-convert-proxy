@@ -41,7 +41,7 @@ impl CodexProxy {
     ) -> Result<Vec<u8>, crate::error::ConversionError> {
         use crate::error::ConversionError;
 
-        let backend = ctx.selected_backend.as_ref().ok_or_else(|| {
+        let backend = ctx.route.selected_backend.as_ref().ok_or_else(|| {
             ConversionError::ProviderError("no backend selected".to_string())
         })?;
         let model_override = backend.model.clone();
@@ -53,7 +53,7 @@ impl CodexProxy {
         })?;
 
         let mut response_req: ResponseRequest =
-            serde_json::from_slice(&ctx.request_body)?;
+            serde_json::from_slice(&ctx.buffers.request_body)?;
         ctx.init_from_response_request(&response_req);
 
         // Resolve previous-turn history if requested.
@@ -93,12 +93,12 @@ impl CodexProxy {
             chat_req.messages = merge_history_messages(history, chat_req.messages);
         }
 
-        ctx.pending_instructions = chat_req
+        ctx.follow_up.pending_instructions = chat_req
             .messages
             .iter()
             .find(|m| m.role == MessageRole::System)
             .map(|m| m.content.as_text());
-        ctx.pending_conversation_messages = Some(chat_req.messages.clone());
+        ctx.follow_up.pending_conversation_messages = Some(chat_req.messages.clone());
 
         serde_json::to_vec(&chat_req).map_err(ConversionError::from)
     }
@@ -189,18 +189,18 @@ impl ProxyHttp for CodexProxy {
         } else {
             path.clone()
         };
-        ctx.normalized_path = Some(normalized_path.clone());
+        ctx.route.normalized_path = Some(normalized_path.clone());
 
         // Check if this is a conversion request (Responses API -> Chat API)
         let is_conversion = (normalized_path.starts_with("/v1/responses") || normalized_path.starts_with("/responses")) && method == "POST";
-        ctx.is_conversion_request = is_conversion;
+        ctx.flags.is_conversion_request = is_conversion;
 
         if is_conversion {
             debug!("[REQUEST] {} {} -> {} (CONVERSION)", method, normalized_path, "conversion");
         }
 
-        ctx.selected_backend = Some(backend.clone());
-        ctx.provider_name = Some(backend.name.clone());
+        ctx.route.selected_backend = Some(backend.clone());
+        ctx.route.provider_name = Some(backend.name.clone());
 
         debug!("[REQUEST] {} {} -> {}", method, normalized_path, backend.name);
 
@@ -214,7 +214,7 @@ impl ProxyHttp for CodexProxy {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> PingoraResult<Box<HttpPeer>> {
-        let backend = ctx.selected_backend.as_ref().ok_or_else(|| {
+        let backend = ctx.route.selected_backend.as_ref().ok_or_else(|| {
             error!("No backend selected");
             pingora_core::Error::new_str("No backend selected")
         })?;
@@ -252,7 +252,7 @@ impl ProxyHttp for CodexProxy {
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> PingoraResult<()> {
-        let backend = ctx.selected_backend.as_ref().ok_or_else(|| {
+        let backend = ctx.route.selected_backend.as_ref().ok_or_else(|| {
             error!("No backend selected");
             pingora_core::Error::new_str("No backend selected")
         })?;
@@ -260,7 +260,7 @@ impl ProxyHttp for CodexProxy {
         let original_uri = session.req_header().uri.clone();
         let path = original_uri.path().to_string();
         let query = original_uri.query();
-        let normalized_path = ctx.normalized_path.as_deref().unwrap_or(path.as_str());
+        let normalized_path = ctx.route.normalized_path.as_deref().unwrap_or(path.as_str());
 
         // Check if this is a conversion request (Responses API → Chat API)
         let is_conversion_request = (normalized_path.starts_with("/v1/responses")
@@ -300,7 +300,7 @@ impl ProxyHttp for CodexProxy {
             pingora_core::Error::new_str("URI rewrite failed")
         })?;
         upstream_request.set_uri(new_uri);
-        ctx.rewritten_path = Some(new_path);
+        ctx.route.rewritten_path = Some(new_path);
 
         // Remove client authentication headers
         upstream_request.remove_header("x-api-key");
@@ -356,15 +356,15 @@ impl ProxyHttp for CodexProxy {
     {
         // For conversion requests, buffer all chunks and suppress forwarding
         // until we have the complete body for conversion.
-        if ctx.is_conversion_request {
+        if ctx.flags.is_conversion_request {
             // Buffer the chunk with size limit check
             if let Some(b) = body {
-                if ctx.request_body.len() + b.len() > MAX_REQUEST_BODY_SIZE {
+                if ctx.buffers.request_body.len() + b.len() > MAX_REQUEST_BODY_SIZE {
                     error!("[BODY] Request body exceeds maximum size limit of {} bytes", MAX_REQUEST_BODY_SIZE);
                     return Err(pingora_core::Error::new_str("Request body too large"));
                 }
-                ctx.request_body.extend_from_slice(b);
-                debug!("[BODY] Buffered {} bytes (total: {})", b.len(), ctx.request_body.len());
+                ctx.buffers.request_body.extend_from_slice(b);
+                debug!("[BODY] Buffered {} bytes (total: {})", b.len(), ctx.buffers.request_body.len());
             }
 
             // For conversion requests, suppress forwarding by returning empty body
@@ -373,7 +373,7 @@ impl ProxyHttp for CodexProxy {
 
             // Only process when we have the complete body
             if end_of_stream {
-                debug!("[BODY] Conversion request complete, {} bytes buffered", ctx.request_body.len());
+                debug!("[BODY] Conversion request complete, {} bytes buffered", ctx.buffers.request_body.len());
 
                 match self.try_convert_request_body(ctx) {
                     Ok(converted) => {
@@ -393,7 +393,7 @@ impl ProxyHttp for CodexProxy {
                     Err(e) => {
                         error!("[BODY] Conversion failed; aborting upstream: {}", e);
                         let path = self.log_dir.join("codex_request_body.json");
-                        let _ = std::fs::write(&path, &ctx.request_body);
+                        let _ = std::fs::write(&path, &ctx.buffers.request_body);
                         return Err(pingora_core::Error::explain(
                             pingora_core::ErrorType::HTTPStatus(400),
                             format!("proxy conversion failed: {e}"),
@@ -407,13 +407,13 @@ impl ProxyHttp for CodexProxy {
 
         // Non-conversion requests: pass through normally
         if let Some(b) = body {
-            ctx.request_body.extend_from_slice(b);
+            ctx.buffers.request_body.extend_from_slice(b);
         }
 
         // Only process when we have the complete body
         if end_of_stream
-            && !ctx.request_body.is_empty()
-            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ctx.request_body)
+            && !ctx.buffers.request_body.is_empty()
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ctx.buffers.request_body)
         {
             // Non-conversion path: extract just model/stream for diagnostics
             ctx.init_from_passthrough_json(&json);
@@ -439,12 +439,12 @@ impl ProxyHttp for CodexProxy {
         let is_sse = content_type.to_ascii_lowercase().contains("text/event-stream");
         let is_success = (200..300).contains(&status);
 
-        ctx.upstream_status = Some(status);
-        ctx.upstream_content_type = Some(content_type.clone());
-        ctx.should_convert_stream_response =
-            ctx.is_streaming && ctx.is_conversion_request && is_success && is_sse;
+        ctx.diagnostics.upstream_status = Some(status);
+        ctx.diagnostics.upstream_content_type = Some(content_type.clone());
+        ctx.flags.should_convert_stream_response =
+            ctx.flags.is_streaming && ctx.flags.is_conversion_request && is_success && is_sse;
 
-        if ctx.is_conversion_request {
+        if ctx.flags.is_conversion_request {
             upstream_response.remove_header("content-length");
             debug!(
                 "[RESPONSE] removed content-length for conversion response (status={}, content_type={})",
@@ -453,7 +453,7 @@ impl ProxyHttp for CodexProxy {
             );
         }
 
-        if ctx.is_streaming && ctx.is_conversion_request && !ctx.should_convert_stream_response {
+        if ctx.flags.is_streaming && ctx.flags.is_conversion_request && !ctx.flags.should_convert_stream_response {
             warn!(
                 "[RESPONSE] bypass stream conversion: status={}, content_type='{}', reason={}",
                 status,
@@ -471,9 +471,9 @@ impl ProxyHttp for CodexProxy {
         debug!(
             "[RESPONSE] status={}, is_streaming={}, is_conversion={}, should_convert_stream={}",
             status,
-            ctx.is_streaming,
-            ctx.is_conversion_request,
-            ctx.should_convert_stream_response
+            ctx.flags.is_streaming,
+            ctx.flags.is_conversion_request,
+            ctx.flags.should_convert_stream_response
         );
         Ok(())
     }
@@ -496,40 +496,40 @@ impl ProxyHttp for CodexProxy {
             "[RESPONSE_BODY] len={:?}, end={}, is_streaming={}, is_conversion={}",
             body_clone.as_ref().map(|b| b.len()),
             end_of_body,
-            ctx.is_streaming,
-            ctx.is_conversion_request
+            ctx.flags.is_streaming,
+            ctx.flags.is_conversion_request
         );
 
         if let Some(b) = body_clone.as_ref() {
             // Check response body size limit for non-streaming conversion only.
             // For streaming conversion we compact parsed bytes to avoid unbounded growth
             // and must not switch protocol mid-stream.
-            if !ctx.is_streaming
-                && ctx.is_conversion_request
-                && ctx.response_body.len() + b.len() > MAX_RESPONSE_BODY_SIZE
+            if !ctx.flags.is_streaming
+                && ctx.flags.is_conversion_request
+                && ctx.buffers.response_body.len() + b.len() > MAX_RESPONSE_BODY_SIZE
             {
                 warn!(
                     "[RESPONSE_BODY] Response body exceeds maximum size limit of {} bytes",
                     MAX_RESPONSE_BODY_SIZE
                 );
             } else {
-                ctx.response_body.extend_from_slice(b);
+                ctx.buffers.response_body.extend_from_slice(b);
             }
 
             // Suppress intermediate chunks for non-streaming conversion requests
             // (the converted body will be sent at end_of_body)
-            if !ctx.is_streaming && ctx.is_conversion_request && !end_of_body {
+            if !ctx.flags.is_streaming && ctx.flags.is_conversion_request && !end_of_body {
                 *body = Some(Bytes::new());
             }
 
             // For streaming conversion responses, convert each SSE chunk
-            if ctx.should_convert_stream_response {
+            if ctx.flags.should_convert_stream_response {
                 // Suppress raw Chat API body immediately - it will be replaced
                 // with converted Responses API events below (or empty if no events)
                 *body = Some(Bytes::new());
 
                 // Get provider clone before mutable borrow to avoid borrow conflict
-                let provider = ctx.provider_name.as_ref()
+                let provider = ctx.route.provider_name.as_ref()
                     .and_then(|name| self.get_provider(name));
 
                 // Delegate to StreamingResponseHandler for chunk processing
@@ -567,8 +567,8 @@ impl ProxyHttp for CodexProxy {
             // honour its protocol contract, so surface an error rather than
             // silently delivering the raw Chat body (which the client expects
             // in Responses-API shape).
-            if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty() {
-                let text = std::str::from_utf8(&ctx.response_body).map_err(|e| {
+            if !ctx.flags.is_streaming && ctx.flags.is_conversion_request && !ctx.buffers.response_body.is_empty() {
+                let text = std::str::from_utf8(&ctx.buffers.response_body).map_err(|e| {
                     error!("[RESPONSE_BODY] upstream body not valid UTF-8: {}", e);
                     pingora_core::Error::explain(
                         pingora_core::ErrorType::HTTPStatus(502),
@@ -612,14 +612,14 @@ impl ProxyHttp for CodexProxy {
                 }
                 *body = Some(Bytes::from(converted));
                 if let (Some(mut messages), Some(assistant_message)) = (
-                    ctx.pending_conversation_messages.clone(),
+                    ctx.follow_up.pending_conversation_messages.clone(),
                     assistant_message,
                 ) {
                     messages.push(assistant_message);
                     self.store_conversation(
                         response_obj.id.clone(),
                         ConversationSnapshot {
-                            instructions: ctx.pending_instructions.clone(),
+                            instructions: ctx.follow_up.pending_instructions.clone(),
                             messages,
                         },
                     );
@@ -628,7 +628,7 @@ impl ProxyHttp for CodexProxy {
 
             info!(
                 "[DONE] provider={}, model={:?}, duration={}ms",
-                ctx.provider_name.as_deref().unwrap_or("unknown"),
+                ctx.route.provider_name.as_deref().unwrap_or("unknown"),
                 ctx.model.as_ref(),
                 duration_ms
             );
@@ -653,8 +653,8 @@ impl ProxyHttp for CodexProxy {
             .map(|ssl| ssl.version.to_string())
             .unwrap_or_else(|| "none".to_string());
 
-        let use_tls = ctx.selected_backend.as_ref().map(|b| b.use_tls).unwrap_or(false);
-        let backend_name = ctx.provider_name.as_deref().unwrap_or("unknown");
+        let use_tls = ctx.route.selected_backend.as_ref().map(|b| b.use_tls).unwrap_or(false);
+        let backend_name = ctx.route.provider_name.as_deref().unwrap_or("unknown");
 
         info!(
             "[CONNECT] {} -> {} (backend={}, TLS={}, reused={}, tls_version={})",
@@ -684,7 +684,7 @@ impl ProxyHttp for CodexProxy {
             e
         );
 
-        let mut e = e.more_context(format!("Provider: {}", ctx.provider_name.as_deref().unwrap_or("unknown")));
+        let mut e = e.more_context(format!("Provider: {}", ctx.route.provider_name.as_deref().unwrap_or("unknown")));
         e.retry.decide_reuse(false);
         e
     }
@@ -714,7 +714,7 @@ impl ProxyHttp for CodexProxy {
             method,
             uri,
             code,
-            ctx.provider_name.as_deref().unwrap_or("unknown"),
+            ctx.route.provider_name.as_deref().unwrap_or("unknown"),
             ctx.model.as_ref(),
             e
         );
@@ -800,9 +800,9 @@ mod tests {
         // produce a ConversionError rather than silently being passed upstream.
         let proxy = make_test_proxy();
         let mut ctx = super::ProxyContext::new();
-        ctx.is_conversion_request = true;
-        ctx.selected_backend = proxy.router.select_with_config("/", &[]).map(|(_, info)| info.clone());
-        ctx.request_body = b"{not valid json".to_vec();
+        ctx.flags.is_conversion_request = true;
+        ctx.route.selected_backend = proxy.router.select_with_config("/", &[]).map(|(_, info)| info.clone());
+        ctx.buffers.request_body = b"{not valid json".to_vec();
         let err = proxy
             .try_convert_request_body(&mut ctx)
             .expect_err("must fail on invalid JSON");
@@ -813,9 +813,9 @@ mod tests {
     fn test_try_convert_request_body_succeeds_on_minimal_request() {
         let proxy = make_test_proxy();
         let mut ctx = super::ProxyContext::new();
-        ctx.is_conversion_request = true;
-        ctx.selected_backend = proxy.router.select_with_config("/", &[]).map(|(_, info)| info.clone());
-        ctx.request_body = br#"{"model":"glm-4","input":"hi"}"#.to_vec();
+        ctx.flags.is_conversion_request = true;
+        ctx.route.selected_backend = proxy.router.select_with_config("/", &[]).map(|(_, info)| info.clone());
+        ctx.buffers.request_body = br#"{"model":"glm-4","input":"hi"}"#.to_vec();
         let bytes = proxy
             .try_convert_request_body(&mut ctx)
             .expect("conversion should succeed");
