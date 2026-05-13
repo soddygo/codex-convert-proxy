@@ -133,19 +133,20 @@ impl<'a> StreamingResponseHandler<'a> {
         let mut converted_chunks: Vec<String> = Vec::new();
 
         if let Some(ref mut state) = self.ctx.stream_state
-            && !state.is_completed {
+            && !state.emit.is_completed {
                 if self.ctx.diagnostics.stream_chunks_parsed == 0 {
                     warn!(
                         "[STREAM_COMPLETE_SKIP] skip response.completed because no valid upstream chunks were parsed (status={:?}, content_type={:?})",
                         self.ctx.diagnostics.upstream_status,
                         self.ctx.diagnostics.upstream_content_type
                     );
-                    state.is_completed = true;
+                    state.emit.is_completed = true;
                 } else {
                     let response_obj = state.build_response_object();
                     if let Some(mut messages) = self.ctx.follow_up.pending_conversation_messages.clone() {
                         let assistant_tool_calls: Vec<ToolCall> = state
-                            .completed_tool_calls
+                            .tool_calls
+                            .completed
                             .iter()
                             .map(|tc| ToolCall {
                                 id: tc.call_id.clone(),
@@ -158,10 +159,10 @@ impl<'a> StreamingResponseHandler<'a> {
                             .collect();
                         messages.push(ChatMessage {
                             role: MessageRole::Assistant,
-                            content: Content::String(if state.full_text.is_empty() {
-                                state.refusal_text.clone()
+                            content: Content::String(if state.text.full_text.is_empty() {
+                                state.text.refusal_text.clone()
                             } else {
-                                state.full_text.clone()
+                                state.text.full_text.clone()
                             }),
                             name: None,
                             annotations: None,
@@ -172,10 +173,10 @@ impl<'a> StreamingResponseHandler<'a> {
                             },
                             tool_call_id: None,
                             function_call: None,
-                            refusal: if state.refusal_text.is_empty() {
+                            refusal: if state.text.refusal_text.is_empty() {
                                 None
                             } else {
-                                Some(state.refusal_text.clone())
+                                Some(state.text.refusal_text.clone())
                             },
                         });
                         self.conversation_store.insert(
@@ -190,9 +191,9 @@ impl<'a> StreamingResponseHandler<'a> {
                         "[STREAM_COMPLETE] response_id={}, output_count={}, has_reasoning={}, has_text={}, tool_calls={}, parsed_chunks={}",
                         response_obj.id,
                         response_obj.output.len(),
-                        state.is_reasoning_added,
-                        state.is_output_item_added,
-                        state.completed_tool_calls.len(),
+                        state.emit.is_reasoning_added,
+                        state.emit.is_output_item_added,
+                        state.tool_calls.completed.len(),
                         self.ctx.diagnostics.stream_chunks_parsed
                     );
                     if self.log_body
@@ -207,7 +208,7 @@ impl<'a> StreamingResponseHandler<'a> {
                     converted_chunks.push(sse_data);
                     // Append SSE [DONE] marker to signal stream end
                     converted_chunks.push("data: [DONE]\n\n".to_string());
-                    state.is_completed = true;
+                    state.emit.is_completed = true;
                 }
             }
 

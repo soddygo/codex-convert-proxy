@@ -1,52 +1,154 @@
 //! Streaming state types: StreamState and ToolCallState.
+//!
+//! `StreamState` was historically a single struct with ~30 fields covering
+//! seven distinct concerns. It is now decomposed into single-responsibility
+//! sub-structs (still `pub` for convenience at the call sites — the grouping
+//! itself documents intent and lifecycle):
+//!
+//! - [`TextAccumulator`] — text/refusal/reasoning content + the thinking-tag
+//!   buffer used by the streaming parser.
+//! - [`IndexAllocator`] — `output_index` / `content_index` allocator state and
+//!   the spec-required `sequence_number` counter.
+//! - [`UsageMetrics`] — token counts received from upstream.
+//! - [`ToolCallTracker`] — in-flight (`current`) vs finalised (`completed`)
+//!   function-call state.
+//! - [`EmitState`] — boolean flags that drive the streaming emit state
+//!   machine + the final response status / incomplete reason.
+//!
+//! `request_context` no longer lives on `StreamState`; callers pass it as a
+//! parameter to [`StreamState::build_response_object`] so that non-streaming
+//! flows don't have to construct a `StreamState` just to carry context.
 
 use crate::convert::context::ResponseRequestContext;
 use crate::types::chat_api::ChatStreamChunk;
 
 use super::super::util::{extract_queries_from_arguments, map_tool_name_to_output_type};
 
-/// Streaming converter state for tracking incremental changes.
-#[derive(Debug, Clone)]
-pub struct StreamState {
-    pub response_id: String,
-    pub output_id: String,
-    pub content_index: u32,
+/// Accumulated text content emitted across stream chunks.
+#[derive(Debug, Clone, Default)]
+pub struct TextAccumulator {
+    /// Assistant text seen so far (with thinking tags stripped).
     pub full_text: String,
+    /// Refusal text emitted via `delta.refusal`.
+    pub refusal_text: String,
+    /// Reasoning content captured from `delta.reasoning_content` or thinking
+    /// tags.
     pub reasoning_text: String,
+    /// Partial buffer for unterminated `<think>` / `<thought>` tags split
+    /// across chunks.
+    pub thinking_buffer: String,
+    /// True if the next text byte belongs to a thinking tag's interior.
+    pub is_thinking: bool,
+}
+
+/// Output-index / content-index / sequence-number allocators for the
+/// stream's lifetime.
+#[derive(Debug, Clone, Default)]
+pub struct IndexAllocator {
+    pub content_index: u32,
+    pub next_output_index: u32,
+    pub text_output_index: Option<u32>,
+    pub reasoning_output_index: Option<u32>,
+    /// Monotonic sequence counter for SSE events (spec-required
+    /// `sequence_number`).
+    pub next_sequence_number: u64,
+}
+
+impl IndexAllocator {
+    /// Allocate and return the next sequence number, then advance the counter.
+    pub fn take_sequence_number(&mut self) -> u64 {
+        let n = self.next_sequence_number;
+        self.next_sequence_number += 1;
+        n
+    }
+}
+
+/// Token usage observed from upstream chunks.
+#[derive(Debug, Clone, Default)]
+pub struct UsageMetrics {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub cached_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+}
+
+impl UsageMetrics {
+    /// Absorb token counts from a streaming chunk's usage block, if present.
+    pub fn update_from_chunk(&mut self, chunk: &ChatStreamChunk) {
+        if let Some(usage) = &chunk.usage {
+            self.input_tokens = usage.prompt_tokens.map(|v| v as i64);
+            self.output_tokens = usage.completion_tokens.map(|v| v as i64);
+            self.total_tokens = usage.total_tokens.map(|v| v as i64);
+            self.cached_tokens = usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+                .map(|v| v as i64);
+            self.reasoning_tokens = usage
+                .completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+                .map(|v| v as i64);
+        }
+    }
+}
+
+/// In-flight + finalised function-call state.
+#[derive(Debug, Clone, Default)]
+pub struct ToolCallTracker {
+    pub current: Vec<ToolCallState>,
+    pub completed: Vec<ToolCallState>,
+}
+
+/// Booleans driving the streaming emit state machine.
+#[derive(Debug, Clone)]
+pub struct EmitState {
     pub is_first_chunk: bool,
     pub is_output_item_added: bool,
     pub is_content_part_added: bool,
     pub is_reasoning_added: bool,
     pub is_function_call_item_added: bool,
     pub is_completed: bool,
-    pub current_tool_calls: Vec<ToolCallState>,
-    pub completed_tool_calls: Vec<ToolCallState>,
-    pub model: String,
-    pub input_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
-    pub total_tokens: Option<i64>,
-    pub cached_tokens: Option<i64>,
-    pub reasoning_tokens: Option<i64>,
-    /// Buffer for incomplete think/thought tags during streaming
-    pub thinking_buffer: String,
-    /// Whether we're currently inside a thinking tag
-    pub is_thinking: bool,
-    /// Next available output_index for sequential assignment
-    pub next_output_index: u32,
-    /// Stored output_index for text message items
-    pub text_output_index: Option<u32>,
-    /// Stored output_index for reasoning items
-    pub reasoning_output_index: Option<u32>,
-    /// Original Responses request fields for protocol-consistent events.
-    pub request_context: Option<ResponseRequestContext>,
-    /// Final response status derived from finish_reason.
+    /// Final response status derived from `finish_reason`.
     pub final_status: String,
-    /// Optional incomplete reason when final_status is incomplete.
+    /// Optional incomplete reason when `final_status == "incomplete"`.
     pub incomplete_reason: Option<String>,
-    /// Refusal text accumulated from streaming deltas.
-    pub refusal_text: String,
-    /// Monotonic sequence counter for SSE events (spec-required `sequence_number`).
-    pub next_sequence_number: u64,
+}
+
+impl Default for EmitState {
+    fn default() -> Self {
+        Self {
+            is_first_chunk: true,
+            is_output_item_added: false,
+            is_content_part_added: false,
+            is_reasoning_added: false,
+            is_function_call_item_added: false,
+            is_completed: false,
+            final_status: "completed".to_string(),
+            incomplete_reason: None,
+        }
+    }
+}
+
+/// Streaming converter state for tracking incremental changes.
+#[derive(Debug, Clone)]
+pub struct StreamState {
+    pub response_id: String,
+    pub output_id: String,
+    pub model: String,
+
+    pub text: TextAccumulator,
+    pub indices: IndexAllocator,
+    pub usage: UsageMetrics,
+    pub tool_calls: ToolCallTracker,
+    pub emit: EmitState,
+
+    /// Backwards-compat carrier for the request context. New code paths should
+    /// pass `Option<&ResponseRequestContext>` directly to
+    /// `build_response_object`; this field will be removed once `ProxyContext`
+    /// stores the context separately.
+    pub request_context: Option<ResponseRequestContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,84 +171,58 @@ impl StreamState {
         request_context: Option<ResponseRequestContext>,
     ) -> Self {
         Self {
-            response_id: response_id.clone(),
             output_id: format!("msg_{}", response_id),
-            content_index: 0,
-            full_text: String::new(),
-            reasoning_text: String::new(),
-            is_first_chunk: true,
-            is_output_item_added: false,
-            is_content_part_added: false,
-            is_reasoning_added: false,
-            is_function_call_item_added: false,
-            is_completed: false,
-            current_tool_calls: Vec::new(),
-            completed_tool_calls: Vec::new(),
+            response_id,
             model,
-            input_tokens: None,
-            output_tokens: None,
-            total_tokens: None,
-            cached_tokens: None,
-            reasoning_tokens: None,
-            thinking_buffer: String::new(),
-            is_thinking: false,
-            next_output_index: 0,
-            text_output_index: None,
-            reasoning_output_index: None,
+            text: TextAccumulator::default(),
+            indices: IndexAllocator::default(),
+            usage: UsageMetrics::default(),
+            tool_calls: ToolCallTracker::default(),
+            emit: EmitState::default(),
             request_context,
-            final_status: "completed".to_string(),
-            incomplete_reason: None,
-            refusal_text: String::new(),
-            next_sequence_number: 0,
         }
     }
 
     /// Allocate and return the next sequence number, then advance the counter.
+    #[inline]
     pub fn take_sequence_number(&mut self) -> u64 {
-        let n = self.next_sequence_number;
-        self.next_sequence_number += 1;
-        n
+        self.indices.take_sequence_number()
     }
 
     /// Update usage from a ChatStreamChunk.
+    #[inline]
     pub fn update_usage(&mut self, chunk: &ChatStreamChunk) {
-        if let Some(usage) = &chunk.usage {
-            self.input_tokens = usage.prompt_tokens.map(|v| v as i64);
-            self.output_tokens = usage.completion_tokens.map(|v| v as i64);
-            self.total_tokens = usage.total_tokens.map(|v| v as i64);
-            self.cached_tokens = usage
-                .prompt_tokens_details
-                .as_ref()
-                .and_then(|d| d.cached_tokens)
-                .map(|v| v as i64);
-            self.reasoning_tokens = usage
-                .completion_tokens_details
-                .as_ref()
-                .and_then(|d| d.reasoning_tokens)
-                .map(|v| v as i64);
-        }
+        self.usage.update_from_chunk(chunk);
     }
 
     /// Build the final ResponseObject with all accumulated outputs.
+    ///
+    /// The `ctx` parameter supplies request-level fields (instructions, tools,
+    /// sampling params, etc.). It defaults to `self.request_context` for
+    /// backwards compatibility but new callers should pass it explicitly.
     pub fn build_response_object(&self) -> Box<crate::types::response_api::ResponseObject> {
         use crate::types::response_api::{
-            InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseContentPart, ResponseObject,
-            ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, Usage,
+            InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseContentPart,
+            ResponseObject, ResponseOutputItem, Usage,
         };
         use chrono::Utc;
+
+        let ctx_opt = self.request_context.as_ref();
 
         let mut output = Vec::new();
 
         // Add reasoning output if present
-        if self.is_reasoning_added && !self.reasoning_text.is_empty() {
+        if self.emit.is_reasoning_added && !self.text.reasoning_text.is_empty() {
             output.push(ResponseOutputItem {
                 id: format!("reasoning_{}", self.response_id),
                 item_type: OutputItemType::Reasoning,
                 status: None,
                 content: Some(vec![]),
-                summary: Some(vec![crate::types::response_api::ReasoningSummaryPart::SummaryText {
-                    text: self.reasoning_text.clone(),
-                }]),
+                summary: Some(vec![
+                    crate::types::response_api::ReasoningSummaryPart::SummaryText {
+                        text: self.text.reasoning_text.clone(),
+                    },
+                ]),
                 role: None,
                 name: None,
                 arguments: None,
@@ -158,18 +234,20 @@ impl StreamState {
         }
 
         // Add assistant message output (text and/or refusal)
-        if self.is_output_item_added && (!self.full_text.is_empty() || !self.refusal_text.is_empty()) {
+        if self.emit.is_output_item_added
+            && (!self.text.full_text.is_empty() || !self.text.refusal_text.is_empty())
+        {
             let mut content_parts = Vec::new();
-            if !self.full_text.is_empty() {
+            if !self.text.full_text.is_empty() {
                 content_parts.push(ResponseContentPart::OutputText {
-                    text: self.full_text.clone(),
+                    text: self.text.full_text.clone(),
                     annotations: vec![],
                     logprobs: vec![],
                 });
             }
-            if !self.refusal_text.is_empty() {
+            if !self.text.refusal_text.is_empty() {
                 content_parts.push(ResponseContentPart::Refusal {
-                    refusal: self.refusal_text.clone(),
+                    refusal: self.text.refusal_text.clone(),
                 });
             }
             output.push(ResponseOutputItem {
@@ -189,10 +267,13 @@ impl StreamState {
         }
 
         // Add function call outputs
-        for tc in &self.completed_tool_calls {
-            let item_type = map_tool_name_to_output_type(&tc.name, self.request_context.as_ref().map(|ctx| &ctx.tools));
+        for tc in &self.tool_calls.completed {
+            let item_type = map_tool_name_to_output_type(&tc.name, ctx_opt.map(|ctx| &ctx.tools));
             let (queries, results) = if item_type != OutputItemType::FunctionCall {
-                (extract_queries_from_arguments(&tc.arguments), Some(serde_json::Value::Null))
+                (
+                    extract_queries_from_arguments(&tc.arguments),
+                    Some(serde_json::Value::Null),
+                )
             } else {
                 (None, None)
             };
@@ -212,106 +293,41 @@ impl StreamState {
             });
         }
 
-        let usage = if self.input_tokens.is_some() || self.output_tokens.is_some() || self.total_tokens.is_some() {
+        // Start from the typed stub so request-level fields and spec-required
+        // defaults are populated consistently, then layer in the streamed
+        // output + final status + usage.
+        let mut response = ResponseObject::stub(
+            self.response_id.clone(),
+            self.model.clone(),
+            self.emit.final_status.clone(),
+            Utc::now().timestamp(),
+            ctx_opt,
+        );
+        response.completed_at = Some(Utc::now().timestamp());
+        response.incomplete_details = self
+            .emit
+            .incomplete_reason
+            .as_ref()
+            .map(|reason| serde_json::json!({ "reason": reason }));
+        response.output = output;
+        response.usage = if self.usage.input_tokens.is_some()
+            || self.usage.output_tokens.is_some()
+            || self.usage.total_tokens.is_some()
+        {
             Some(Usage {
-                input_tokens: self.input_tokens,
+                input_tokens: self.usage.input_tokens,
                 input_tokens_details: Some(InputTokensDetails {
-                    cached_tokens: self.cached_tokens.unwrap_or(0),
+                    cached_tokens: self.usage.cached_tokens.unwrap_or(0),
                 }),
-                output_tokens: self.output_tokens,
+                output_tokens: self.usage.output_tokens,
                 output_tokens_details: Some(OutputTokensDetails {
-                    reasoning_tokens: self.reasoning_tokens.unwrap_or(0),
+                    reasoning_tokens: self.usage.reasoning_tokens.unwrap_or(0),
                 }),
-                total_tokens: self.total_tokens,
+                total_tokens: self.usage.total_tokens,
             })
         } else {
             None
         };
-
-        Box::new(ResponseObject {
-            id: self.response_id.clone(),
-            object: "response".to_string(),
-            status: self.final_status.clone(),
-            model: self.model.clone(),
-            created_at: Utc::now().timestamp(),
-            completed_at: Some(Utc::now().timestamp()),
-            error: None,
-            incomplete_details: self
-                .incomplete_reason
-                .as_ref()
-                .map(|reason| serde_json::json!({ "reason": reason })),
-            background: None,
-            instructions: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.instructions.clone()),
-            max_output_tokens: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.max_output_tokens),
-            max_tool_calls: None,
-            input: None,
-            output,
-            // Spec default: parallel_tool_calls=true when request didn't specify.
-            parallel_tool_calls: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.parallel_tool_calls)
-                .unwrap_or(true),
-            previous_response_id: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.previous_response_id.clone()),
-            reasoning: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.reasoning.clone()),
-            store: self.request_context.as_ref().and_then(|ctx| ctx.store),
-            temperature: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.temperature),
-            text: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.text.clone())
-                .or_else(|| {
-                    Some(ResponseTextConfig {
-                        format: Some(ResponseTextFormat {
-                            format_type: "text".to_string(),
-                            name: None,
-                            schema: None,
-                            strict: None,
-                        }),
-                    })
-                }),
-            tool_choice: self
-                .request_context
-                .as_ref()
-                .map(|ctx| ctx.tool_choice.clone())
-                .unwrap_or_default(),
-            tools: self
-                .request_context
-                .as_ref()
-                .map(|ctx| ctx.tools.clone())
-                .unwrap_or_default(),
-            top_p: self.request_context.as_ref().and_then(|ctx| ctx.top_p),
-            truncation: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.truncation.clone()),
-            user: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.user.clone()),
-            metadata: self
-                .request_context
-                .as_ref()
-                .and_then(|ctx| ctx.metadata.clone())
-                .unwrap_or_default(),
-            service_tier: None,
-            top_logprobs: None,
-            usage,
-        })
+        Box::new(response)
     }
 }
