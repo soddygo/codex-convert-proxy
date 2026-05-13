@@ -1,7 +1,7 @@
 //! In-memory conversation context store for previous_response_id expansion.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::RwLock;
+use std::sync::Mutex;
 
 use crate::types::chat_api::ChatMessage;
 
@@ -21,9 +21,12 @@ struct StoreInner {
 }
 
 /// Thread-safe in-memory store keyed by response id.
+///
+/// Uses `Mutex` rather than `RwLock`: every `get` mutates the LRU order, so
+/// there is no read-only path that could benefit from shared access.
 #[derive(Debug, Default)]
 pub struct ConversationStore {
-    inner: RwLock<StoreInner>,
+    inner: Mutex<StoreInner>,
 }
 
 impl ConversationStore {
@@ -32,7 +35,7 @@ impl ConversationStore {
     }
 
     pub fn get(&self, response_id: &str) -> Option<ConversationSnapshot> {
-        let mut guard = self.inner.write().ok()?;
+        let mut guard = self.inner.lock().ok()?;
         let snapshot = guard.map.get(response_id).cloned()?;
         if let Some(pos) = guard.lru_order.iter().position(|k| k == response_id) {
             guard.lru_order.remove(pos);
@@ -42,7 +45,7 @@ impl ConversationStore {
     }
 
     pub fn insert(&self, response_id: String, snapshot: ConversationSnapshot) {
-        if let Ok(mut guard) = self.inner.write() {
+        if let Ok(mut guard) = self.inner.lock() {
             if let Some(pos) = guard.lru_order.iter().position(|k| k == &response_id) {
                 guard.lru_order.remove(pos);
             }
