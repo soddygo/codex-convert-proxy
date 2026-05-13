@@ -36,7 +36,7 @@ pub enum ToolPriority {
 
 impl ToolPriority {
     /// Parse from string configuration value.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "prefer_defined" | "prefer-defined" => ToolPriority::PreferDefined,
             "prefer_searched" | "prefer-searched" => ToolPriority::PreferSearched,
@@ -261,11 +261,11 @@ pub(crate) fn merge_tools_map(first: &[Tool], second: &[Tool]) -> Vec<Tool> {
 
     // First pass: add first's tools in order
     for tool in first {
-        if let Some(name) = &tool.name {
-            if !seen.contains(name) {
-                result.push(tool.clone());
-                seen.insert(name.clone());
-            }
+        if let Some(name) = &tool.name
+            && !seen.contains(name)
+        {
+            result.push(tool.clone());
+            seen.insert(name.clone());
         }
     }
 
@@ -362,11 +362,11 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_from_str() {
-        assert_eq!(ToolPriority::from_str("prefer_defined"), ToolPriority::PreferDefined);
-        assert_eq!(ToolPriority::from_str("prefer-searched"), ToolPriority::PreferSearched);
-        assert_eq!(ToolPriority::from_str("merge"), ToolPriority::Merge);
-        assert_eq!(ToolPriority::from_str("unknown"), ToolPriority::Merge); // default
+    fn test_priority_parse_from_str() {
+        assert_eq!(ToolPriority::parse_from_str("prefer_defined"), ToolPriority::PreferDefined);
+        assert_eq!(ToolPriority::parse_from_str("prefer-searched"), ToolPriority::PreferSearched);
+        assert_eq!(ToolPriority::parse_from_str("merge"), ToolPriority::Merge);
+        assert_eq!(ToolPriority::parse_from_str("unknown"), ToolPriority::Merge); // default
     }
 
     #[test]
