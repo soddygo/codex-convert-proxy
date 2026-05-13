@@ -3,14 +3,14 @@
 use crate::error::ConversionError;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 // ============================================================================
 // Provider Factory Registry
 // ============================================================================
 
 /// Factory function type for creating providers (type-erased function pointer).
-type ProviderFactory = fn() -> Box<dyn Provider + Send + Sync>;
+type ProviderFactory = fn() -> Arc<dyn Provider>;
 
 /// Static registry of provider factories.
 fn get_registry() -> &'static HashMap<&'static str, ProviderFactory> {
@@ -31,17 +31,17 @@ pub fn registered_provider_names() -> Vec<&'static str> {
 }
 
 // Factory functions (must be in separate functions to get unique addresses)
-fn glm_factory() -> Box<dyn Provider + Send + Sync> {
-    Box::new(super::glm::GLMProvider::new())
+fn glm_factory() -> Arc<dyn Provider> {
+    Arc::new(super::glm::GLMProvider::new())
 }
-fn kimi_factory() -> Box<dyn Provider + Send + Sync> {
-    Box::new(super::kimi::KimiProvider::new())
+fn kimi_factory() -> Arc<dyn Provider> {
+    Arc::new(super::kimi::KimiProvider::new())
 }
-fn deepseek_factory() -> Box<dyn Provider + Send + Sync> {
-    Box::new(super::deepseek::DeepSeekProvider::new())
+fn deepseek_factory() -> Arc<dyn Provider> {
+    Arc::new(super::deepseek::DeepSeekProvider::new())
 }
-fn minimax_factory() -> Box<dyn Provider + Send + Sync> {
-    Box::new(super::minimax::MiniMaxProvider::new())
+fn minimax_factory() -> Arc<dyn Provider> {
+    Arc::new(super::minimax::MiniMaxProvider::new())
 }
 
 // ============================================================================
@@ -52,6 +52,9 @@ fn minimax_factory() -> Box<dyn Provider + Send + Sync> {
 ///
 /// Each Chinese LLM provider may have slightly different API requirements
 /// or model name formats that need to be normalized.
+///
+/// Implementations are expected to be **stateless** so a single instance can
+/// be shared across all requests via `Arc<dyn Provider>`.
 pub trait Provider: Send + Sync + 'static {
     /// Get provider name.
     fn name(&self) -> &'static str;
@@ -86,20 +89,6 @@ pub trait Provider: Send + Sync + 'static {
     /// This is called for each SSE chunk received from the provider.
     /// Providers can modify chunk content before event conversion.
     fn transform_stream_chunk(&self, _chunk: &mut ChatStreamChunk) {}
-
-    /// Clone the provider as a boxed trait object.
-    fn clone_box(&self) -> Box<dyn Provider + Send + Sync>;
-}
-
-// ============================================================================
-// Clone Implementation
-// ============================================================================
-
-/// Clone for Box<dyn Provider> uses downcasting (Rust object safety limitation).
-impl Clone for Box<dyn Provider + Send + Sync> {
-    fn clone(&self) -> Self {
-        self.as_ref().clone_box()
-    }
 }
 
 // ============================================================================
@@ -109,7 +98,7 @@ impl Clone for Box<dyn Provider + Send + Sync> {
 /// Create a provider by name using the static registry.
 ///
 /// Supports both exact names and aliases (e.g., "moonshot" -> "kimi").
-pub fn create_provider(name: &str) -> Result<Box<dyn Provider + Send + Sync>, ConversionError> {
+pub fn create_provider(name: &str) -> Result<Arc<dyn Provider>, ConversionError> {
     let name_lower = name.to_lowercase();
 
     // Handle aliases

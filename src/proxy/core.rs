@@ -11,8 +11,8 @@ use crate::proxy::context_store::{ConversationSnapshot, ConversationStore};
 pub struct CodexProxy {
     /// Backend router for multi-backend routing.
     pub router: Arc<BackendRouter>,
-    /// Providers for each backend.
-    pub providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
+    /// Providers for each backend (shared, stateless).
+    pub providers: HashMap<String, Arc<dyn Provider>>,
     /// Whether to log request/response bodies.
     pub log_body: bool,
     /// Directory for debug log files.
@@ -25,7 +25,7 @@ impl CodexProxy {
     /// Create a new CodexProxy instance.
     pub fn new(
         router: Arc<BackendRouter>,
-        providers: HashMap<String, Box<dyn Provider + Send + Sync>>,
+        providers: HashMap<String, Arc<dyn Provider>>,
         log_body: bool,
         log_dir: std::path::PathBuf,
     ) -> Self {
@@ -38,9 +38,9 @@ impl CodexProxy {
         }
     }
 
-    /// Get cloned provider for a backend.
-    pub fn get_provider(&self, name: &str) -> Option<Box<dyn Provider + Send + Sync>> {
-        self.providers.get(name).map(|p| p.clone_box())
+    /// Get a shared handle to the provider for a backend.
+    pub fn get_provider(&self, name: &str) -> Option<Arc<dyn Provider>> {
+        self.providers.get(name).map(Arc::clone)
     }
 
     /// Lookup conversation snapshot by response id.

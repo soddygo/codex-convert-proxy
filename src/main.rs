@@ -52,7 +52,7 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
     let listen = &config.listen;
 
     // Create providers for each backend
-    let mut providers: HashMap<String, Box<dyn Provider + Send + Sync>> = HashMap::new();
+    let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
     for backend in &config.backends {
         let name = backend.name.clone();
         if let std::collections::hash_map::Entry::Vacant(e) = providers.entry(name.clone()) {

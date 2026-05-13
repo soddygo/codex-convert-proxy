@@ -2,7 +2,6 @@
 
 use crate::providers::trait_::Provider;
 
-#[derive(Clone)]
 /// DeepSeek provider.
 ///
 /// DeepSeek is mostly compatible with standard Chat API.
@@ -24,9 +23,5 @@ impl DeepSeekProvider {
 impl Provider for DeepSeekProvider {
     fn name(&self) -> &'static str {
         "deepseek"
-    }
-
-    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
-        Box::new(self.clone())
     }
 }

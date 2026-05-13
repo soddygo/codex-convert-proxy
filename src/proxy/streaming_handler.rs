@@ -21,8 +21,8 @@ use super::context::ProxyContext;
 pub struct StreamingResponseHandler<'a> {
     /// Reference to proxy context for state access.
     ctx: &'a mut ProxyContext,
-    /// Provider clone for transformations (owned to avoid lifetime complexity).
-    provider: Option<Box<dyn Provider + Send + Sync>>,
+    /// Shared provider handle for transformations.
+    provider: Option<Arc<dyn Provider>>,
     /// Whether to log bodies for debugging.
     log_body: bool,
     /// Conversation store for persisting completed turns.
@@ -33,7 +33,7 @@ impl<'a> StreamingResponseHandler<'a> {
     /// Create a new streaming handler.
     pub fn new(
         ctx: &'a mut ProxyContext,
-        provider: Option<Box<dyn Provider + Send + Sync>>,
+        provider: Option<Arc<dyn Provider>>,
         log_body: bool,
         conversation_store: Arc<ConversationStore>,
     ) -> Self {

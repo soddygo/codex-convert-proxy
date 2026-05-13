@@ -732,7 +732,7 @@ mod tests {
         }];
         let router = Arc::new(crate::config::BackendRouter::new(configs).unwrap());
         let mut providers = HashMap::new();
-        providers.insert("glm".to_string(), Box::new(GLMProvider) as Box<dyn Provider + Send + Sync>);
+        providers.insert("glm".to_string(), Arc::new(GLMProvider) as Arc<dyn Provider>);
         let proxy = CodexProxy::new(router, providers, true, std::path::PathBuf::from("logs"));
         assert!(proxy.log_body);
     }

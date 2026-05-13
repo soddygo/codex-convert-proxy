@@ -2,7 +2,6 @@
 
 use crate::providers::trait_::Provider;
 
-#[derive(Clone)]
 /// Kimi (Moonshot AI) provider.
 ///
 /// Kimi API accepts both "kimi-" and "moonshot-v1-" model name prefixes natively.
@@ -24,9 +23,5 @@ impl KimiProvider {
 impl Provider for KimiProvider {
     fn name(&self) -> &'static str {
         "kimi"
-    }
-
-    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
-        Box::new(self.clone())
     }
 }

@@ -3,7 +3,6 @@
 use crate::providers::trait_::Provider;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk, Content, MessageRole};
 
-#[derive(Clone)]
 /// MiniMax provider.
 ///
 /// MiniMax specific handling:
@@ -71,9 +70,6 @@ impl Provider for MiniMaxProvider {
         }
     }
 
-    fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {
-        Box::new(self.clone())
-    }
 }
 
 #[cfg(test)]
