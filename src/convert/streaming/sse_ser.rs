@@ -418,6 +418,11 @@ data: {data}
 ")
 }
 
+/// Build the stub `response` payload embedded in `response.created` /
+/// `response.in_progress` / `response.failed` / `response.incomplete` events.
+///
+/// Uses the typed `ResponseObject::stub` constructor so the streaming stub
+/// and the final `response.completed` payload share a single schema source.
 fn response_stub_json(
     id: &str,
     model: &str,
@@ -425,51 +430,14 @@ fn response_stub_json(
     created_at: i64,
     request_context: Option<&ResponseRequestContext>,
 ) -> serde_json::Value {
-    let mut resp = if let Some(ctx) = request_context {
-        serde_json::to_value(ctx).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    resp["id"] = serde_json::json!(id);
-    resp["object"] = serde_json::json!("response");
-    resp["created_at"] = serde_json::json!(created_at);
-    resp["status"] = serde_json::json!(status);
-    resp["error"] = serde_json::Value::Null;
-    resp["incomplete_details"] = serde_json::Value::Null;
-    resp["model"] = serde_json::json!(model);
-    resp["output"] = serde_json::json!([]);
-    resp["usage"] = serde_json::Value::Null;
-
-    // Spec `Response.required` mandates these fields be present (possibly null).
-    // Backfill defaults when the request context omitted them so strict SDK clients
-    // can decode the stub even on Failed/Incomplete events (which pass no context).
-    if resp.get("text").is_none_or(|v| v.is_null()) {
-        resp["text"] = serde_json::json!({"format":{"type":"text"}});
-    }
-    if resp.get("tools").is_none_or(|v| v.is_null()) {
-        resp["tools"] = serde_json::json!([]);
-    }
-    if resp.get("tool_choice").is_none_or(|v| v.is_null()) {
-        resp["tool_choice"] = serde_json::json!("auto");
-    }
-    if resp.get("parallel_tool_calls").is_none_or(|v| v.is_null()) {
-        resp["parallel_tool_calls"] = serde_json::json!(true);
-    }
-    if resp.get("metadata").is_none_or(|v| v.is_null()) {
-        resp["metadata"] = serde_json::json!({});
-    }
-    if !resp.as_object().is_some_and(|o| o.contains_key("instructions")) {
-        resp["instructions"] = serde_json::Value::Null;
-    }
-    if !resp.as_object().is_some_and(|o| o.contains_key("temperature")) {
-        resp["temperature"] = serde_json::Value::Null;
-    }
-    if !resp.as_object().is_some_and(|o| o.contains_key("top_p")) {
-        resp["top_p"] = serde_json::Value::Null;
-    }
-
-    resp
+    let stub = crate::types::response_api::ResponseObject::stub(
+        id.to_string(),
+        model.to_string(),
+        status.to_string(),
+        created_at,
+        request_context,
+    );
+    serde_json::to_value(&stub).unwrap_or(serde_json::json!({}))
 }
 
 #[cfg(test)]

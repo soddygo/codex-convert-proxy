@@ -393,6 +393,70 @@ pub struct ResponseObject {
     pub usage: Option<Usage>,
 }
 
+impl ResponseObject {
+    /// Build a "stub" ResponseObject for in-flight streaming events
+    /// (`response.created`, `response.in_progress`, `response.failed`,
+    /// `response.incomplete`).
+    ///
+    /// The stub carries the request-level context (instructions, tools,
+    /// sampling params) so the emitted JSON satisfies `Response.required` even
+    /// before any output items exist. This is the **single source of truth** —
+    /// both Created/InProgress (with context) and Failed/Incomplete (without
+    /// context) flow through this constructor so the schema cannot drift the
+    /// way the prior hand-built JSON Maps did.
+    pub fn stub(
+        id: String,
+        model: String,
+        status: String,
+        created_at: i64,
+        ctx: Option<&crate::convert::context::ResponseRequestContext>,
+    ) -> Self {
+        let default_text = Some(ResponseTextConfig {
+            format: Some(ResponseTextFormat {
+                format_type: "text".to_string(),
+                name: None,
+                schema: None,
+                strict: None,
+            }),
+        });
+        Self {
+            id,
+            object: "response".to_string(),
+            status,
+            model,
+            created_at,
+            completed_at: None,
+            error: None,
+            incomplete_details: None,
+            background: None,
+            instructions: ctx.and_then(|c| c.instructions.clone()),
+            max_output_tokens: ctx.and_then(|c| c.max_output_tokens),
+            max_tool_calls: None,
+            input: None,
+            output: Vec::new(),
+            parallel_tool_calls: ctx.and_then(|c| c.parallel_tool_calls).unwrap_or(true),
+            previous_response_id: ctx.and_then(|c| c.previous_response_id.clone()),
+            reasoning: ctx.and_then(|c| c.reasoning.clone()),
+            store: ctx.and_then(|c| c.store),
+            temperature: ctx.and_then(|c| c.temperature),
+            text: ctx.and_then(|c| c.text.clone()).or(default_text),
+            tool_choice: ctx
+                .map(|c| c.tool_choice.clone())
+                .unwrap_or_default(),
+            tools: ctx.map(|c| c.tools.clone()).unwrap_or_default(),
+            top_p: ctx.and_then(|c| c.top_p),
+            truncation: ctx.and_then(|c| c.truncation.clone()),
+            user: ctx.and_then(|c| c.user.clone()),
+            metadata: ctx
+                .and_then(|c| c.metadata.clone())
+                .unwrap_or_default(),
+            service_tier: None,
+            top_logprobs: None,
+            usage: None,
+        }
+    }
+}
+
 /// Usage information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
