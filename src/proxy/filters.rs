@@ -22,6 +22,88 @@ use super::context::ProxyContext;
 use super::core::CodexProxy;
 use crate::proxy::streaming_handler::StreamingResponseHandler;
 
+impl CodexProxy {
+    /// Convert a buffered Responses-API request body to a Chat-API body.
+    ///
+    /// Returns `Err(ConversionError)` if any of:
+    /// - no provider is configured for the selected backend
+    /// - body cannot be parsed as `ResponseRequest`
+    /// - protocol conversion fails
+    /// - the converted `ChatRequest` cannot be serialised
+    ///
+    /// Callers should propagate the error to the client as a 4xx response
+    /// (Fail-Fast — earlier behaviour silently passed the original
+    /// Responses-API body to a Chat endpoint and let the upstream return 400,
+    /// which obscured proxy bugs).
+    fn try_convert_request_body(
+        &self,
+        ctx: &mut ProxyContext,
+    ) -> Result<Vec<u8>, crate::error::ConversionError> {
+        use crate::error::ConversionError;
+
+        let backend = ctx.selected_backend.as_ref().ok_or_else(|| {
+            ConversionError::ProviderError("no backend selected".to_string())
+        })?;
+        let model_override = backend.model.clone();
+        let provider = self.get_provider(&backend.name).ok_or_else(|| {
+            ConversionError::ProviderError(format!(
+                "no provider registered for backend '{}'",
+                backend.name
+            ))
+        })?;
+
+        let mut response_req: ResponseRequest =
+            serde_json::from_slice(&ctx.request_body)?;
+        ctx.init_from_response_request(&response_req);
+
+        // Resolve previous-turn history if requested.
+        let mut previous_messages: Option<Vec<ChatMessage>> = None;
+        if let Some(prev_id) = response_req.previous_response_id.clone() {
+            if let Some(snapshot) = self.get_conversation(&prev_id) {
+                if matches!(
+                    &response_req.input,
+                    crate::types::response_api::InputItemOrString::Array(_)
+                ) {
+                    debug!(
+                        "[REQUEST_CONVERT] previous_response_id + input[] detected, applying prefer-previous merge policy"
+                    );
+                }
+                if response_req.instructions.is_none() {
+                    response_req.instructions = snapshot.instructions.clone();
+                }
+                previous_messages = Some(snapshot.messages);
+            } else {
+                warn!(
+                    "[REQUEST_CONVERT] previous_response_id not found in context store: {}",
+                    prev_id
+                );
+            }
+        }
+
+        let context = ResponseRequestContext::from(&response_req);
+        ctx.set_response_request_context(context);
+
+        let mut chat_req = response_to_chat(
+            response_req,
+            provider.as_ref(),
+            model_override.as_deref(),
+        )?;
+
+        if let Some(history) = previous_messages {
+            chat_req.messages = merge_history_messages(history, chat_req.messages);
+        }
+
+        ctx.pending_instructions = chat_req
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::System)
+            .map(|m| m.content.as_text());
+        ctx.pending_conversation_messages = Some(chat_req.messages.clone());
+
+        serde_json::to_vec(&chat_req).map_err(ConversionError::from)
+    }
+}
+
 fn merge_history_messages(
     mut history: Vec<ChatMessage>,
     current_turn_messages: Vec<ChatMessage>,
@@ -293,104 +375,31 @@ impl ProxyHttp for CodexProxy {
             if end_of_stream {
                 debug!("[BODY] Conversion request complete, {} bytes buffered", ctx.request_body.len());
 
-                let backend_name = ctx.selected_backend.as_ref().map(|b| b.name.clone());
-
-                // Parse and convert request
-                if let (Some(b_name), Some(_backend)) = (backend_name.as_ref(), ctx.selected_backend.as_ref())
-                    && let Some(provider) = self.get_provider(b_name) {
-                        // Get model override from backend config (extract value before mutable borrow)
-                        let model_override = ctx.selected_backend.as_ref()
-                            .and_then(|b| b.model.as_deref())
-                            .map(|s| s.to_string());
-                        // Parse as ResponseRequest (single pass: also used to init context)
-                        match serde_json::from_slice::<ResponseRequest>(&ctx.request_body) {
-                            Ok(mut response_req) => {
-                                ctx.init_from_response_request(&response_req);
-                                let mut previous_messages: Option<Vec<ChatMessage>> = None;
-                                if let Some(prev_id) = response_req.previous_response_id.clone() {
-                                    if let Some(snapshot) = self.get_conversation(&prev_id) {
-                                        if matches!(
-                                            &response_req.input,
-                                            crate::types::response_api::InputItemOrString::Array(_)
-                                        ) {
-                                            debug!(
-                                                "[REQUEST_CONVERT] previous_response_id + input[] detected, applying prefer-previous merge policy"
-                                            );
-                                        }
-                                        if response_req.instructions.is_none() {
-                                            response_req.instructions = snapshot.instructions.clone();
-                                        }
-                                        previous_messages = Some(snapshot.messages);
-                                    } else {
-                                        warn!(
-                                            "[REQUEST_CONVERT] previous_response_id not found in context store: {}",
-                                            prev_id
-                                        );
-                                    }
-                                }
-                                let context = ResponseRequestContext::from(&response_req);
-                                // Set context before converting (needs mutable ctx)
-                                ctx.set_response_request_context(context);
-                                // Convert using provider (model_override is now an owned String)
-                                match response_to_chat(response_req, provider.as_ref(), model_override.as_deref()) {
-                                    Ok(mut chat_req) => {
-                                        if let Some(history) = previous_messages {
-                                            chat_req.messages = merge_history_messages(history, chat_req.messages);
-                                        }
-                                        ctx.pending_instructions = chat_req
-                                            .messages
-                                            .iter()
-                                            .find(|m| m.role == MessageRole::System)
-                                            .map(|m| m.content.as_text());
-                                        ctx.pending_conversation_messages = Some(chat_req.messages.clone());
-                                        // Serialize ChatRequest as JSON
-                                        match serde_json::to_vec(&chat_req) {
-                                            Ok(converted) => {
-                                                let converted_len = converted.len();
-                                                // Log conversion if enabled
-                                                if self.log_body {
-                                                    debug!("[CONVERTED REQUEST] {}", String::from_utf8_lossy(&converted));
-                                                }
-                                                // Save converted request for debugging to logs directory
-                                                let path = self.log_dir.join("converted_request.json");
-                                                if std::fs::write(&path, &converted).is_ok() {
-                                                    debug!("[CONVERTED REQUEST SAVED] to {}", path.display());
-                                                }
-                                                // Replace body with converted request - this is what will be sent
-                                                *body = Some(Bytes::from(converted));
-                                                debug!("[BODY] Sending converted body: {} bytes", converted_len);
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to serialize ChatRequest: {}", e);
-                                                // Restore original body to let upstream handle the error
-                                                *body = Some(Bytes::from(ctx.request_body.clone()));
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to convert request: {}", e);
-                                        // Restore original body to let upstream handle the error
-                                        *body = Some(Bytes::from(ctx.request_body.clone()));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                // If parsing fails, keep original body
-                                debug!("Failed to parse as ResponseRequest, keeping original: {}", e);
-                                // Restore original body to let upstream handle the error
-                                *body = Some(Bytes::from(ctx.request_body.clone()));
-                                // Best-effort: try to extract model/stream as raw JSON for logging
-                                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ctx.request_body) {
-                                    ctx.init_from_passthrough_json(&json);
-                                }
-                                // Save full request body to file for debugging
-                                let path = self.log_dir.join("codex_request_body.json");
-                                if std::fs::write(&path, &ctx.request_body).is_ok() {
-                                    debug!("[REQUEST BODY SAVED] to {}", path.display());
-                                }
-                            }
+                match self.try_convert_request_body(ctx) {
+                    Ok(converted) => {
+                        if self.log_body {
+                            debug!(
+                                "[CONVERTED REQUEST] {}",
+                                String::from_utf8_lossy(&converted)
+                            );
                         }
+                        let path = self.log_dir.join("converted_request.json");
+                        if std::fs::write(&path, &converted).is_ok() {
+                            debug!("[CONVERTED REQUEST SAVED] to {}", path.display());
+                        }
+                        debug!("[BODY] Sending converted body: {} bytes", converted.len());
+                        *body = Some(Bytes::from(converted));
                     }
+                    Err(e) => {
+                        error!("[BODY] Conversion failed; aborting upstream: {}", e);
+                        let path = self.log_dir.join("codex_request_body.json");
+                        let _ = std::fs::write(&path, &ctx.request_body);
+                        return Err(pingora_core::Error::explain(
+                            pingora_core::ErrorType::HTTPStatus(400),
+                            format!("proxy conversion failed: {e}"),
+                        ));
+                    }
+                }
             }
 
             return Ok(());
@@ -553,44 +562,69 @@ impl ProxyHttp for CodexProxy {
         if end_of_body {
             let duration_ms = ctx.start_time.elapsed().as_millis() as u64;
 
-            // For non-streaming conversion responses, convert the full body
-            if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty()
-                && let Ok(text) = std::str::from_utf8(&ctx.response_body)
-                    && let Ok(chat_resp) = serde_json::from_str::<crate::types::chat_api::ChatResponse>(text) {
-                        let assistant_message = chat_resp.choices.first().map(|c| c.message.clone());
-                        // Get context from stream_state (set during request_body_filter)
-                        let request_context = ctx.stream_state.as_ref()
-                            .and_then(|s| s.request_context.as_ref());
-                        match crate::convert::chat_to_response_with_context(
-                            chat_resp,
-                            request_context,
-                        ) {
-                            Ok(response_obj) => {
-                                if let Ok(converted) = serde_json::to_vec(&response_obj) {
-                                    if self.log_body {
-                                        debug!("[CONVERTED RESPONSE] {}", String::from_utf8_lossy(&converted));
-                                    }
-                                    *body = Some(Bytes::from(converted));
-                                }
-                                if let (Some(mut messages), Some(assistant_message)) = (
-                                    ctx.pending_conversation_messages.clone(),
-                                    assistant_message,
-                                ) {
-                                    messages.push(assistant_message);
-                                    self.store_conversation(
-                                        response_obj.id.clone(),
-                                        ConversationSnapshot {
-                                            instructions: ctx.pending_instructions.clone(),
-                                            messages,
-                                        },
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to convert response: {}", e);
-                            }
-                        }
-                    }
+            // For non-streaming conversion responses, convert the full body.
+            // Fail-Fast: a parse/convert error here means the proxy cannot
+            // honour its protocol contract, so surface an error rather than
+            // silently delivering the raw Chat body (which the client expects
+            // in Responses-API shape).
+            if !ctx.is_streaming && ctx.is_conversion_request && !ctx.response_body.is_empty() {
+                let text = std::str::from_utf8(&ctx.response_body).map_err(|e| {
+                    error!("[RESPONSE_BODY] upstream body not valid UTF-8: {}", e);
+                    pingora_core::Error::explain(
+                        pingora_core::ErrorType::HTTPStatus(502),
+                        format!("upstream response is not valid UTF-8: {e}"),
+                    )
+                })?;
+                let chat_resp: crate::types::chat_api::ChatResponse =
+                    serde_json::from_str(text).map_err(|e| {
+                        error!("[RESPONSE_BODY] failed to parse upstream ChatResponse: {}", e);
+                        pingora_core::Error::explain(
+                            pingora_core::ErrorType::HTTPStatus(502),
+                            format!("upstream response not a valid Chat completion: {e}"),
+                        )
+                    })?;
+                let assistant_message = chat_resp.choices.first().map(|c| c.message.clone());
+                let request_context = ctx
+                    .stream_state
+                    .as_ref()
+                    .and_then(|s| s.request_context.as_ref());
+                let response_obj =
+                    crate::convert::chat_to_response_with_context(chat_resp, request_context)
+                        .map_err(|e| {
+                            error!("[RESPONSE_BODY] failed to convert response: {}", e);
+                            pingora_core::Error::explain(
+                                pingora_core::ErrorType::HTTPStatus(500),
+                                format!("proxy response conversion failed: {e}"),
+                            )
+                        })?;
+                let converted = serde_json::to_vec(&response_obj).map_err(|e| {
+                    error!("[RESPONSE_BODY] failed to serialize converted response: {}", e);
+                    pingora_core::Error::explain(
+                        pingora_core::ErrorType::HTTPStatus(500),
+                        format!("proxy response serialization failed: {e}"),
+                    )
+                })?;
+                if self.log_body {
+                    debug!(
+                        "[CONVERTED RESPONSE] {}",
+                        String::from_utf8_lossy(&converted)
+                    );
+                }
+                *body = Some(Bytes::from(converted));
+                if let (Some(mut messages), Some(assistant_message)) = (
+                    ctx.pending_conversation_messages.clone(),
+                    assistant_message,
+                ) {
+                    messages.push(assistant_message);
+                    self.store_conversation(
+                        response_obj.id.clone(),
+                        ConversationSnapshot {
+                            instructions: ctx.pending_instructions.clone(),
+                            messages,
+                        },
+                    );
+                }
+            }
 
             info!(
                 "[DONE] provider={}, model={:?}, duration={}ms",
@@ -722,6 +756,24 @@ mod tests {
 
     use super::CodexProxy;
 
+    fn make_test_proxy() -> CodexProxy {
+        let configs = vec![BackendConfig {
+            name: "glm".to_string(),
+            url: "https://api.example.com".to_string(),
+            api_key: "test-key".to_string(),
+            protocol: "openai".to_string(),
+            model: None,
+            match_rules: MatchRules {
+                default: true,
+                ..Default::default()
+            },
+        }];
+        let router = Arc::new(crate::config::BackendRouter::new(configs).unwrap());
+        let mut providers = HashMap::new();
+        providers.insert("glm".to_string(), Arc::new(GLMProvider) as Arc<dyn Provider>);
+        CodexProxy::new(router, providers, false, std::path::PathBuf::from("logs"))
+    }
+
     #[test]
     fn test_proxy_creation() {
         let configs = vec![BackendConfig {
@@ -740,6 +792,36 @@ mod tests {
         providers.insert("glm".to_string(), Arc::new(GLMProvider) as Arc<dyn Provider>);
         let proxy = CodexProxy::new(router, providers, true, std::path::PathBuf::from("logs"));
         assert!(proxy.log_body);
+    }
+
+    #[test]
+    fn test_try_convert_request_body_rejects_malformed_json() {
+        // Fail-Fast: a body that doesn't deserialize as ResponseRequest must
+        // produce a ConversionError rather than silently being passed upstream.
+        let proxy = make_test_proxy();
+        let mut ctx = super::ProxyContext::new();
+        ctx.is_conversion_request = true;
+        ctx.selected_backend = proxy.router.select_with_config("/", &[]).map(|(_, info)| info.clone());
+        ctx.request_body = b"{not valid json".to_vec();
+        let err = proxy
+            .try_convert_request_body(&mut ctx)
+            .expect_err("must fail on invalid JSON");
+        assert!(matches!(err, crate::error::ConversionError::JsonError(_)));
+    }
+
+    #[test]
+    fn test_try_convert_request_body_succeeds_on_minimal_request() {
+        let proxy = make_test_proxy();
+        let mut ctx = super::ProxyContext::new();
+        ctx.is_conversion_request = true;
+        ctx.selected_backend = proxy.router.select_with_config("/", &[]).map(|(_, info)| info.clone());
+        ctx.request_body = br#"{"model":"glm-4","input":"hi"}"#.to_vec();
+        let bytes = proxy
+            .try_convert_request_body(&mut ctx)
+            .expect("conversion should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["model"], "glm-4");
+        assert!(json["messages"].is_array());
     }
 
     fn msg(role: MessageRole, text: &str) -> ChatMessage {
