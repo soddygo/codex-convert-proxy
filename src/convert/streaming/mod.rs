@@ -2,7 +2,7 @@
 //!
 //! Submodules:
 //! - `events` — ResponseStreamEvent enum
-//! - `state` — StreamState, ToolCallState, ResponseRequestContext
+//! - `state` — StreamState, ToolCallState
 //! - `converter` — chat_chunk_to_response_events(), finalize_output()
 //! - `sse_ser` — event_to_sse(), sse_event(), response_stub_json()
 

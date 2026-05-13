@@ -6,7 +6,7 @@ use crate::types::response_api::{
     InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseAnnotation, ResponseContentPart, ResponseObject,
     ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, Usage,
 };
-use crate::convert::streaming::ResponseRequestContext;
+use crate::convert::ResponseRequestContext;
 use super::util::{extract_queries_from_arguments, map_tool_name_to_output_type, parse_thought_tags};
 
 /// Convert a Chat API response to a Responses API ResponseObject.
@@ -501,7 +501,7 @@ mod tests {
             parallel_tool_calls: None,
             background: None,
         };
-        let ctx = crate::convert::streaming::ResponseRequestContext::from(&req);
+        let ctx = crate::convert::ResponseRequestContext::from(&req);
         let response = chat_to_response_with_context(chat_resp, Some(&ctx)).unwrap();
 
         let web = response

@@ -2,7 +2,6 @@
 
 use crate::providers::trait_::Provider;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk, Content, MessageRole};
-use std::any::Any;
 
 #[derive(Clone)]
 /// MiniMax provider.
@@ -70,10 +69,6 @@ impl Provider for MiniMaxProvider {
                         }
                     }
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {

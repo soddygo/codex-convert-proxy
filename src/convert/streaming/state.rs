@@ -1,12 +1,7 @@
-//! Streaming state types: StreamState, ToolCallState, and ResponseRequestContext.
+//! Streaming state types: StreamState and ToolCallState.
 
-use std::collections::HashMap;
-
-use serde::Serialize;
+use crate::convert::context::ResponseRequestContext;
 use crate::types::chat_api::ChatStreamChunk;
-use crate::types::response_api::{
-    ResponseReasoning, ResponseRequest, ResponseTextConfig, Tool, ToolChoice,
-};
 
 use super::super::util::{extract_queries_from_arguments, map_tool_name_to_output_type};
 
@@ -64,74 +59,6 @@ pub struct ToolCallState {
     pub arguments: String,
     pub output_index: u32,
     pub chat_api_index: u32,
-    pub last_args_len: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ResponseRequestContext {
-    pub instructions: Option<String>,
-    pub max_output_tokens: Option<u32>,
-    pub parallel_tool_calls: Option<bool>,
-    pub previous_response_id: Option<String>,
-    pub reasoning: Option<ResponseReasoning>,
-    pub store: Option<bool>,
-    pub temperature: Option<f32>,
-    pub text: Option<ResponseTextConfig>,
-    pub tool_choice: ToolChoice,
-    pub tools: Vec<Tool>,
-    pub top_p: Option<f32>,
-    pub truncation: Option<String>,
-    pub user: Option<String>,
-    pub metadata: Option<HashMap<String, serde_json::Value>>,
-}
-
-impl From<&ResponseRequest> for ResponseRequestContext {
-    fn from(req: &ResponseRequest) -> Self {
-        let mut metadata = req.metadata.clone().unwrap_or_default();
-        let tool_map: serde_json::Map<String, serde_json::Value> = req
-            .tools
-            .iter()
-            .filter_map(|t| {
-                t.name.as_ref().map(|name| {
-                    (
-                        name.clone(),
-                        serde_json::json!({
-                            "type": t.tool_type,
-                            "strict": t.strict,
-                            "extra": t.extra,
-                        }),
-                    )
-                })
-            })
-            .collect();
-        if !tool_map.is_empty() {
-            metadata.insert(
-                "x_proxy_tool_map".to_string(),
-                serde_json::Value::Object(tool_map),
-            );
-        }
-
-        Self {
-            instructions: req.instructions.clone(),
-            max_output_tokens: req.max_output_tokens.or(req.max_tokens),
-            parallel_tool_calls: req.parallel_tool_calls,
-            previous_response_id: req.previous_response_id.clone(),
-            reasoning: req.reasoning.clone(),
-            store: req.store,
-            temperature: req.temperature,
-            text: req.text.clone(),
-            tool_choice: req.tool_choice.clone(),
-            tools: req.tools.clone(),
-            top_p: req.top_p,
-            truncation: req.truncation.clone(),
-            user: req.user.clone(),
-            metadata: if metadata.is_empty() {
-                None
-            } else {
-                Some(metadata)
-            },
-        }
-    }
 }
 
 impl StreamState {
@@ -177,7 +104,7 @@ impl StreamState {
     /// Allocate and return the next sequence number, then advance the counter.
     pub fn take_sequence_number(&mut self) -> u64 {
         let n = self.next_sequence_number;
-        self.next_sequence_number = self.next_sequence_number.saturating_add(1);
+        self.next_sequence_number += 1;
         n
     }
 

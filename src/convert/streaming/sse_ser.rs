@@ -1,7 +1,7 @@
 //! SSE serialization: ResponseStreamEvent to SSE string format.
 
 use super::events::ResponseStreamEvent;
-use super::state::ResponseRequestContext;
+use crate::convert::context::ResponseRequestContext;
 
 /// Generate SSE string from a Response stream event.
 ///

@@ -2,7 +2,6 @@
 
 use crate::providers::trait_::Provider;
 use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
-use std::any::Any;
 
 #[derive(Clone)]
 /// GLM (Zhipu AI) provider.
@@ -70,10 +69,6 @@ impl Provider for GLMProvider {
                     }
                 }
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {

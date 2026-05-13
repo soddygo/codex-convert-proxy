@@ -11,17 +11,8 @@ pub enum ConversionError {
     #[error("Invalid input format: {0}")]
     InvalidFormat(String),
 
-    #[error("Unsupported feature: {0}")]
-    UnsupportedFeature(String),
-
     #[error("Provider error: {0}")]
     ProviderError(String),
-
-    #[error("SSE parsing error: {0}")]
-    SseParseError(String),
-
-    #[error("Streaming error: {0}")]
-    StreamingError(String),
 
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),

@@ -89,9 +89,6 @@ pub trait Provider: Send + Sync + 'static {
 
     /// Clone the provider as a boxed trait object.
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync>;
-
-    /// Convert self to Any for downcasting.
-    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 // ============================================================================

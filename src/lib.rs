@@ -65,7 +65,9 @@ pub use convert::{
 
 // Re-export streaming types for library consumers
 #[cfg(feature = "providers-lib")]
-pub use convert::streaming::{ResponseRequestContext, ResponseStreamEvent, StreamState};
+pub use convert::ResponseRequestContext;
+#[cfg(feature = "providers-lib")]
+pub use convert::streaming::{ResponseStreamEvent, StreamState};
 
 // Re-export stats
 pub use stats::{RequestRecord, RequestStats, StatsSummary, TokenUsage};

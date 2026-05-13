@@ -2,7 +2,7 @@
 
 use crate::types::response_api::ResponseObject;
 
-use super::state::ResponseRequestContext;
+use crate::convert::context::ResponseRequestContext;
 
 /// SSE event types for Responses API streaming.
 #[derive(Debug, Clone)]

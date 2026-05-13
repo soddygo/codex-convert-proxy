@@ -1,7 +1,6 @@
 //! Kimi (Moonshot AI) provider implementation.
 
 use crate::providers::trait_::Provider;
-use std::any::Any;
 
 #[derive(Clone)]
 /// Kimi (Moonshot AI) provider.
@@ -25,10 +24,6 @@ impl KimiProvider {
 impl Provider for KimiProvider {
     fn name(&self) -> &'static str {
         "kimi"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn clone_box(&self) -> Box<dyn Provider + Send + Sync> {

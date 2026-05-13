@@ -3,7 +3,7 @@
 use crate::constants::MAX_THINKING_BUFFER_SIZE;
 use crate::types::response_api::{OutputItemType, Tool, ToolType};
 
-use super::streaming::ResponseRequestContext;
+use super::context::ResponseRequestContext;
 use memchr::memmem;
 
 /// Map a tool name to its `OutputItemType` using the original tools list.

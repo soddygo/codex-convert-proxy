@@ -4,7 +4,7 @@
 //! including backend definitions and routing rules.
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Single backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,11 +88,6 @@ impl BackendInfo {
             model: config.model.clone(),
         })
     }
-
-    /// Check if using Anthropic-style auth (x-api-key header).
-    pub fn use_anthropic_auth(&self) -> bool {
-        self.protocol.to_lowercase() != "openai"
-    }
 }
 
 /// Backend router for selecting backends based on request characteristics.
@@ -155,44 +150,6 @@ impl BackendRouter {
         })
     }
 
-    /// Select a backend based on request path and headers.
-    pub fn select(&self, path: &str, headers: &[(String, String)]) -> Option<&BackendInfo> {
-        for (config, info) in &self.backends {
-            // Check path prefix match
-            if let Some(ref prefix) = config.match_rules.path_prefix
-                && Self::path_matches_prefix(path, prefix) {
-                    debug!(
-                        "Path '{}' matched backend '{}' (prefix: {})",
-                        path, config.name, prefix
-                    );
-                    return Some(info);
-                }
-
-            // Check header match
-            if let Some(ref header_match) = config.match_rules.header {
-                for (name, value) in headers {
-                    if name.eq_ignore_ascii_case(&header_match.name)
-                        && value == &header_match.value
-                    {
-                        debug!(
-                            "Header '{}: {}' matched backend '{}'",
-                            header_match.name, header_match.value, config.name
-                        );
-                        return Some(info);
-                    }
-                }
-            }
-        }
-
-        // Fall back to default backend
-        if let Some(index) = self.default_index {
-            debug!("Using default backend '{}'", self.backends[index].1.name);
-            return Some(&self.backends[index].1);
-        }
-
-        None
-    }
-
     /// Select backend and compute rewritten path.
     pub fn select_and_rewrite(
         &self,
@@ -250,11 +207,6 @@ impl BackendRouter {
     /// Get all backend names.
     pub fn backend_names(&self) -> Vec<&str> {
         self.backends.iter().map(|(c, _)| c.name.as_str()).collect()
-    }
-
-    /// Get the default backend.
-    pub fn default_backend(&self) -> Option<&BackendInfo> {
-        self.default_index.map(|i| &self.backends[i].1)
     }
 }
 
@@ -361,27 +313,6 @@ mod tests {
         let (info, path) = router.select_and_rewrite("/other/path", &[]).unwrap();
         assert_eq!(info.name, "default");
         assert_eq!(path, "/other/path");
-    }
-
-    #[test]
-    fn test_anthropic_auth() {
-        let info = BackendInfo {
-            name: "test".to_string(),
-            host: "localhost".to_string(),
-            port: 443,
-            use_tls: true,
-            base_path: String::new(),
-            api_key: "test".to_string(),
-            protocol: "anthropic".to_string(),
-            model: None,
-        };
-        assert!(info.use_anthropic_auth());
-
-        let info = BackendInfo {
-            protocol: "openai".to_string(),
-            ..info
-        };
-        assert!(!info.use_anthropic_auth());
     }
 
     #[test]

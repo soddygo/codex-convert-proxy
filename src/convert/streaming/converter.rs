@@ -245,7 +245,6 @@ pub fn chat_chunk_to_response_events(
                             arguments: initial_args.clone(),
                             output_index: func_output_index,
                             chat_api_index: tc.index,
-                            last_args_len: initial_args.len(),
                         };
                         state.current_tool_calls.push(tc_state);
 
@@ -258,16 +257,17 @@ pub fn chat_chunk_to_response_events(
                     } else if let Some(idx) = existing_idx {
                         let tc_state = &mut state.current_tool_calls[idx];
                         if let Some(args) = &tc.function.arguments {
-                            let prev_len = tc_state.last_args_len;
+                            // Upstream may send either cumulative arguments (full so far) or
+                            // incremental deltas. Detect cumulative via prefix match and slice
+                            // out the new suffix; otherwise append the chunk verbatim.
+                            let prev_len = tc_state.arguments.len();
                             let new_delta = if args.len() > prev_len && args.starts_with(&tc_state.arguments) {
                                 let delta = args[prev_len..].to_string();
                                 tc_state.arguments = args.clone();
-                                tc_state.last_args_len = args.len();
                                 delta
                             } else {
                                 let delta = args.clone();
                                 tc_state.arguments.push_str(args);
-                                tc_state.last_args_len = tc_state.arguments.len();
                                 delta
                             };
 
