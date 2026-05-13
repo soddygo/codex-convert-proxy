@@ -9,41 +9,36 @@ keywords = ["proxy", "ai", "openai", "api", "conversion"]
 categories = ["web-programming", "network-programming"]
 
 [features]
-# Default = full library + server (standalone proxy binary)
-default = ["full"]
+# Default = full proxy server binary.
+default = ["server"]
 
-# Core library features (for embedding in other projects)
-# Minimal: just providers + conversion. Add "config-lib" if BackendRouter is needed.
-lib = ["providers-lib"]
+# Library: providers + conversion + types. For embedding the conversion logic
+# in other Rust applications without pulling in Pingora / the proxy server.
+lib = ["async-trait"]
 
-# Providers module (trait + implementations)
-providers-lib = ["async-trait"]
-
-# Config module
-config-lib = ["url"]
-
-# Full library including server functionality and CLI
-full = ["lib", "config-lib", "server", "clap", "tracing-subscriber", "tracing-appender", "opentelemetry", "telemetry-lib"]
-
-# Server functionality (requires Pingora + logging)
+# Server: the full standalone proxy binary (depends on `lib`, adds config
+# parsing, the Pingora HTTP server, CLI, and logging).
 server = [
     "lib",
-    "config-lib",
+    "url",
+    "clap",
+    "tracing-subscriber",
+    "tracing-appender",
     "pingora/lb",
     "pingora/rustls",
     "pingora-core/rustls",
     "pingora-http",
     "pingora-proxy/rustls",
-    "tracing-subscriber",
-    "tracing-appender",
 ]
 
-# Binary/CLI support (implies server)
-# binary is an alias for full (they are functionally identical)
-binary = ["full"]
-
-# Telemetry module
-telemetry-lib = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
+# Telemetry: OpenTelemetry exporters for tracing/metrics. Independent of
+# server vs lib; combine as needed.
+telemetry = [
+    "opentelemetry",
+    "opentelemetry_sdk",
+    "opentelemetry-otlp",
+    "tracing-opentelemetry",
+]
 
 [dependencies]
 # Core (always available with lib or full)
@@ -85,6 +80,13 @@ uuid = { version = "1.0", features = ["v4"] }
 async-trait = { version = "0.1", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 url = { version = "2.5", optional = true }
+
+[[bin]]
+name = "codex-convert-proxy"
+path = "src/main.rs"
+# The proxy binary requires the full server stack. With only `lib` enabled
+# the crate is consumable as a library but the binary won't compile.
+required-features = ["server"]
 
 [dev-dependencies]
 tokio-test = "0.4"

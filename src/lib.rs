@@ -11,12 +11,11 @@
 //!
 //! # Features
 //!
-//! - `providers-lib`: Provider trait + implementations + conversion functions (minimal embedding)
-//! - `config-lib`: BackendRouter and config types (optional, for standalone proxy)
-//! - `lib`: Alias for `providers-lib`
-//! - `full` (default): Full library including server functionality and CLI
-//! - `server`: Pingora-based proxy server (implies `lib` + `config-lib`)
-//! - `binary`: CLI binary support (alias for `full`)
+//! - `lib`: Provider trait + implementations + conversion + types (for embedding
+//!   the conversion logic in other Rust applications)
+//! - `server` (default): Full Pingora-based proxy binary (implies `lib`, adds
+//!   config parsing, the HTTP server, CLI, and logging)
+//! - `telemetry`: OpenTelemetry tracing/metrics exporters
 //!
 //! # Usage (as library)
 //!
@@ -48,42 +47,42 @@ pub mod stats;
 pub mod types;
 pub mod util;
 
-// Conversion modules (require providers-lib for Provider trait)
-#[cfg(feature = "providers-lib")]
+// Conversion modules (require the `lib` feature for the Provider trait)
+#[cfg(feature = "lib")]
 pub mod convert;
 
 // Re-export main types
 pub use error::{ConversionError, ProxyError};
 pub use types::*;
 
-// Re-export convert functions (requires providers-lib)
-#[cfg(feature = "providers-lib")]
+// Re-export convert functions (requires the `lib` feature)
+#[cfg(feature = "lib")]
 pub use convert::{
     chat_chunk_to_response_events, chat_to_response, chat_to_response_with_context,
     event_to_sse, response_to_chat,
 };
 
 // Re-export streaming types for library consumers
-#[cfg(feature = "providers-lib")]
+#[cfg(feature = "lib")]
 pub use convert::ResponseRequestContext;
-#[cfg(feature = "providers-lib")]
+#[cfg(feature = "lib")]
 pub use convert::streaming::{ResponseStreamEvent, StreamState};
 
 // Re-export stats
 pub use stats::{RequestRecord, RequestStats, StatsSummary, TokenUsage};
 
-// Providers module (providers-lib feature)
-#[cfg(feature = "providers-lib")]
+// Providers module (`lib` feature)
+#[cfg(feature = "lib")]
 pub mod providers;
 
-#[cfg(feature = "providers-lib")]
+#[cfg(feature = "lib")]
 pub use providers::{create_provider, DeepSeekProvider, GLMProvider, KimiProvider, MiniMaxProvider, Provider};
 
-// Config module (config-lib feature - optional for standalone proxy)
-#[cfg(feature = "config-lib")]
+// Config module (`server` feature - parsing backend definitions)
+#[cfg(feature = "server")]
 pub mod config;
 
-#[cfg(feature = "config-lib")]
+#[cfg(feature = "server")]
 pub use config::{BackendConfig, BackendInfo, BackendRouter, ProxyConfig};
 
 // Server functionality (server feature - Pingora proxy)
@@ -97,19 +96,19 @@ pub mod server;
 pub use proxy::CodexProxy;
 
 // CLI binary support (full feature implies binary)
-#[cfg(feature = "full")]
+#[cfg(feature = "server")]
 pub mod cli;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "server")]
 pub use cli::{Cli, Commands, StartArgs};
 
 // Logging (server/binary feature - requires tracing-subscriber and tracing-appender)
 #[cfg(feature = "server")]
 pub mod logger;
 
-// Telemetry (telemetry-lib feature)
-#[cfg(feature = "telemetry-lib")]
+// Telemetry (`telemetry` feature)
+#[cfg(feature = "telemetry")]
 pub mod telemetry;
 
-#[cfg(feature = "telemetry-lib")]
+#[cfg(feature = "telemetry")]
 pub use telemetry::TelemetryConfig;
