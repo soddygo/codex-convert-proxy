@@ -547,7 +547,6 @@ impl ProxyHttp for CodexProxy {
                 let mut handler = StreamingResponseHandler::new(
                     ctx,
                     provider,
-                    self.log_body,
                     self.conversation_store.clone(),
                 );
 

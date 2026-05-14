@@ -23,8 +23,6 @@ pub struct StreamingResponseHandler<'a> {
     ctx: &'a mut ProxyContext,
     /// Shared provider handle for transformations.
     provider: Option<Arc<dyn Provider>>,
-    /// Whether to log bodies for debugging.
-    log_body: bool,
     /// Conversation store for persisting completed turns.
     conversation_store: Arc<ConversationStore>,
 }
@@ -34,13 +32,11 @@ impl<'a> StreamingResponseHandler<'a> {
     pub fn new(
         ctx: &'a mut ProxyContext,
         provider: Option<Arc<dyn Provider>>,
-        log_body: bool,
         conversation_store: Arc<ConversationStore>,
     ) -> Self {
         Self {
             ctx,
             provider,
-            log_body,
             conversation_store,
         }
     }
@@ -197,7 +193,7 @@ impl<'a> StreamingResponseHandler<'a> {
                         self.ctx.diagnostics.stream_chunks_parsed
                     );
 
-                    // Always log the response object for debugging (even if log_body is false)
+                    // Always log the response object for debugging
                     if let Ok(json) = serde_json::to_string(&response_obj) {
                         debug!("[STREAM_COMPLETE_JSON] {}", json);
                     }
