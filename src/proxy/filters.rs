@@ -155,8 +155,12 @@ impl ProxyHttp for CodexProxy {
     {
         let method = session.req_header().method.as_str().to_string();
         let path = session.req_header().uri.path().to_string();
+        let query = session.req_header().uri.query().unwrap_or("");
 
-        // Collect headers for routing
+        debug!("[REQUEST_FILTER] ★★★ RECEIVED REQUEST ★★★");
+        debug!("[REQUEST_FILTER] Method: {}, Path: {}, Query: {}", method, path, query);
+
+        // Log ALL headers for debugging
         let headers: Vec<(String, String)> = session
             .req_header()
             .headers
@@ -168,6 +172,12 @@ impl ProxyHttp for CodexProxy {
                 )
             })
             .collect();
+
+        for (name, value) in &headers {
+            debug!("[REQUEST_FILTER]   Header: {}: {}", name, value);
+        }
+
+        debug!("[REQUEST_FILTER] ★★★ END REQUEST HEADER ★★★");
 
         // Select backend with config to support path_prefix stripping.
         let (backend_config, backend) = match self.router.select_with_config(&path, &headers) {

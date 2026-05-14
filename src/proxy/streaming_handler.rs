@@ -196,15 +196,18 @@ impl<'a> StreamingResponseHandler<'a> {
                         state.tool_calls.completed.len(),
                         self.ctx.diagnostics.stream_chunks_parsed
                     );
-                    if self.log_body
-                        && let Ok(json) = serde_json::to_string(&response_obj) {
-                            debug!("[STREAM_COMPLETE_JSON] {}", json);
-                        }
+
+                    // Always log the response object for debugging (even if log_body is false)
+                    if let Ok(json) = serde_json::to_string(&response_obj) {
+                        debug!("[STREAM_COMPLETE_JSON] {}", json);
+                    }
+
                     let completed_event = ResponseStreamEvent::Completed {
                         response: response_obj,
                     };
                     let seq = state.take_sequence_number();
                     let sse_data = event_to_sse(&completed_event, seq);
+                    debug!("[STREAM_COMPLETE] Generated SSE event (len={}): {}", sse_data.len(), sse_data);
                     converted_chunks.push(sse_data);
                     // Append SSE [DONE] marker to signal stream end
                     converted_chunks.push("data: [DONE]\n\n".to_string());
