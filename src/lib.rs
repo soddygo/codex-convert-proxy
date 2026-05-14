@@ -39,6 +39,9 @@
 //! - [`KimiProvider`] - For Moonshot AI Kimi models
 //! - [`DeepSeekProvider`] - For DeepSeek models
 //! - [`MiniMaxProvider`] - For MiniMax models
+//! - [`DefaultProvider`] - Generic fallback for any OpenAI-compatible provider
+//!   (used automatically by [`create_provider`] when the provider name is
+//!   not in the built-in registry)
 
 // Core modules (always available)
 pub mod constants;
@@ -76,7 +79,7 @@ pub use stats::{RequestRecord, RequestStats, StatsSummary, TokenUsage};
 pub mod providers;
 
 #[cfg(feature = "lib")]
-pub use providers::{create_provider, DeepSeekProvider, GLMProvider, KimiProvider, MiniMaxProvider, Provider};
+pub use providers::{create_provider, DefaultProvider, DeepSeekProvider, GLMProvider, KimiProvider, MiniMaxProvider, Provider};
 
 // Config module (`server` feature - parsing backend definitions)
 #[cfg(feature = "server")]

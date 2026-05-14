@@ -275,8 +275,8 @@ impl ProxyHttp for CodexProxy {
             if let Some(provider) = self.get_provider(&backend.name) {
                 provider.chat_completions_path()
             } else {
-                // Fallback to standard path
-                "/v1/chat/completions".to_string()
+                // Fallback to standard path (without /v1 prefix, which comes from base_path)
+                "/chat/completions".to_string()
             }
         } else {
             normalized_path.to_string()

@@ -28,7 +28,8 @@ impl Provider for MiniMaxProvider {
     }
 
     fn chat_completions_path(&self) -> String {
-        // MiniMax URL already includes /v1, so just /chat/completions
+        // MiniMax base_path already includes version prefix (/v1),
+        // so we only need the endpoint suffix.
         "/chat/completions".to_string()
     }
 

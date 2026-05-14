@@ -29,7 +29,8 @@ impl Provider for GLMProvider {
     }
 
     fn chat_completions_path(&self) -> String {
-        // GLM uses /chat/completions not /v1/chat/completions
+        // GLM base_path already includes version prefix (/api/paas/v4),
+        // so we only need the endpoint suffix.
         "/chat/completions".to_string()
     }
 
