@@ -6,11 +6,11 @@ mod tools;
 
 pub use context::{ToolPriority, ToolSearchContext};
 pub use messages::{convert_input_to_messages, extract_content};
-pub use tools::{convert_tools, convert_tool_choice};
+pub use tools::{convert_tool_choice, convert_tools};
 
 use crate::constants::MIN_MAX_TOKENS;
-use crate::error::ConversionError;
 use crate::convert::ResponseRequestContext;
+use crate::error::ConversionError;
 use crate::providers::{Provider, TokenLimitField};
 use crate::types::chat_api::{ChatRequest, StreamOptions};
 use crate::types::response_api::{ResponseRequest, ResponseTextConfig};
@@ -107,7 +107,9 @@ pub fn response_to_chat(
         top_p: response_req.top_p,
         user: response_req.user,
         stream_options: if response_req.stream {
-            Some(StreamOptions { include_usage: Some(true) })
+            Some(StreamOptions {
+                include_usage: Some(true),
+            })
         } else {
             None
         },
@@ -119,8 +121,12 @@ pub fn response_to_chat(
         n: None,
         stop: None,
         response_format,
-        reasoning_effort: provider
-            .normalize_reasoning_effort(response_req.reasoning.as_ref().and_then(|r| r.effort.clone())),
+        reasoning_effort: provider.normalize_reasoning_effort(
+            response_req
+                .reasoning
+                .as_ref()
+                .and_then(|r| r.effort.clone()),
+        ),
         parallel_tool_calls: response_req.parallel_tool_calls,
         seed: None,
         service_tier: None,
@@ -134,24 +140,27 @@ pub fn response_to_chat(
     // Apply min_tokens floor validation (some providers reject max_tokens < MIN_MAX_TOKENS).
     // Surface as a warn so the silent mutation is observable in logs.
     if let Some(max_tokens) = chat_req.max_tokens
-        && max_tokens < MIN_MAX_TOKENS {
-            warn!(
-                "[REQUEST_CONVERT] max_tokens {} below floor {}; raising to floor",
-                max_tokens, MIN_MAX_TOKENS
-            );
-            chat_req.max_tokens = Some(MIN_MAX_TOKENS);
-        }
+        && max_tokens < MIN_MAX_TOKENS
+    {
+        warn!(
+            "[REQUEST_CONVERT] max_tokens {} below floor {}; raising to floor",
+            max_tokens, MIN_MAX_TOKENS
+        );
+        chat_req.max_tokens = Some(MIN_MAX_TOKENS);
+    }
 
     if let Some(max_completion_tokens) = chat_req.max_completion_tokens
-        && max_completion_tokens < MIN_MAX_TOKENS {
-            warn!(
-                "[REQUEST_CONVERT] max_completion_tokens {} below floor {}; raising to floor",
-                max_completion_tokens, MIN_MAX_TOKENS
-            );
-            chat_req.max_completion_tokens = Some(MIN_MAX_TOKENS);
-        }
+        && max_completion_tokens < MIN_MAX_TOKENS
+    {
+        warn!(
+            "[REQUEST_CONVERT] max_completion_tokens {} below floor {}; raising to floor",
+            max_completion_tokens, MIN_MAX_TOKENS
+        );
+        chat_req.max_completion_tokens = Some(MIN_MAX_TOKENS);
+    }
 
     capabilities.sanitize_request(&mut chat_req);
+    provider.sanitize_request(&mut chat_req);
     let extensions = provider.provider_extensions(&request_context)?;
     chat_req.apply_provider_extensions(extensions);
 
@@ -174,8 +183,8 @@ mod tests {
     use crate::types::chat_api::MessageRole;
     use crate::types::response_api::{
         Content as ResponseContent, InputItem, InputItemOrString, InputItemType, ResponseReasoning,
-        ResponseRequest, ResponseTextConfig, ResponseTextFormat,
-        Tool, ToolChoice as ResponseToolChoice, ToolType,
+        ResponseRequest, ResponseTextConfig, ResponseTextFormat, Tool,
+        ToolChoice as ResponseToolChoice, ToolType,
     };
 
     fn make_request(input: InputItemOrString) -> ResponseRequest {
@@ -609,28 +618,63 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_search_output_merges_with_predefined_tools() {
-        let mut request = make_request(InputItemOrString::Array(vec![
+    fn test_reasoning_input_items_are_ignored_without_breaking_chat_messages() {
+        let request = make_request(InputItemOrString::Array(vec![
             InputItem {
-                id: Some("tso_1".to_string()),
-                item_type: InputItemType::ToolSearchOutput,
+                id: Some("rs_1".to_string()),
+                item_type: InputItemType::Reasoning,
                 role: None,
                 content: None,
                 name: None,
                 arguments: None,
-                call_id: Some("tsc_call_1".to_string()),
+                call_id: None,
                 output: None,
                 namespace: None,
-                tools: Some(vec![Tool {
-                    tool_type: ToolType::Function,
-                    name: Some("search_tool".to_string()),
-                    description: None,
-                    parameters: None,
-                    strict: None,
-                    extra: HashMap::new(),
-                }]),
+                tools: None,
+            },
+            InputItem {
+                id: Some("msg_1".to_string()),
+                item_type: InputItemType::Message,
+                role: Some("user".to_string()),
+                content: Some(ResponseContent::String("继续分析".to_string())),
+                name: None,
+                arguments: None,
+                call_id: None,
+                output: None,
+                namespace: None,
+                tools: None,
             },
         ]));
+
+        let provider = crate::providers::minimax::MiniMaxProvider;
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
+
+        assert_eq!(chat_req.messages.len(), 1);
+        assert_eq!(chat_req.messages[0].role, MessageRole::User);
+        assert_eq!(chat_req.messages[0].content.as_text(), "继续分析");
+    }
+
+    #[test]
+    fn test_tool_search_output_merges_with_predefined_tools() {
+        let mut request = make_request(InputItemOrString::Array(vec![InputItem {
+            id: Some("tso_1".to_string()),
+            item_type: InputItemType::ToolSearchOutput,
+            role: None,
+            content: None,
+            name: None,
+            arguments: None,
+            call_id: Some("tsc_call_1".to_string()),
+            output: None,
+            namespace: None,
+            tools: Some(vec![Tool {
+                tool_type: ToolType::Function,
+                name: Some("search_tool".to_string()),
+                description: None,
+                parameters: None,
+                strict: None,
+                extra: HashMap::new(),
+            }]),
+        }]));
         // Predefined tool with same name - searched tool should override
         request.tools = vec![Tool {
             tool_type: ToolType::Function,
@@ -700,7 +744,9 @@ mod tests {
 
         let provider = GLMProvider;
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
-        let response_format = chat_req.response_format.expect("response_format should be mapped");
+        let response_format = chat_req
+            .response_format
+            .expect("response_format should be mapped");
         assert_eq!(response_format["type"], "json_schema");
         assert_eq!(response_format["json_schema"]["name"], "AnswerSchema");
         assert_eq!(response_format["json_schema"]["strict"], true);

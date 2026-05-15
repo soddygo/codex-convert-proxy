@@ -1,14 +1,14 @@
 //! Core conversion logic: Chat SSE chunks to Responses API stream events.
 
-use crate::error::ConversionError;
 use crate::convert::ResponseRequestContext;
+use crate::error::ConversionError;
 use crate::types::chat_api::{ChatStreamChunk, Content, ToolCallDelta};
 
-use super::events::ResponseStreamEvent;
-use super::state::{StreamState, ToolCallState};
 use super::super::util::{
     map_tool_name_to_stream_item_type, parse_streaming_thinking, sanitize_pseudo_tool_markup,
 };
+use super::events::ResponseStreamEvent;
+use super::state::{StreamState, ToolCallState};
 
 /// Convert a Chat API SSE chunk to Responses API SSE events.
 pub fn chat_chunk_to_response_events(
@@ -43,35 +43,38 @@ pub fn chat_chunk_to_response_events(
     // Process each choice
     for choice in &chunk.choices {
         if let Some(delta) = &choice.delta {
-            tracing::debug!("[DELTA] content={:?}, tool_calls={:?}, function_call={:?}, refusal={:?}, reasoning_content={:?}",
+            tracing::debug!(
+                "[DELTA] content={:?}, tool_calls={:?}, function_call={:?}, refusal={:?}, reasoning_content={:?}",
                 delta.content.is_some(),
                 delta.tool_calls.as_ref().map(|tc| tc.len()),
                 delta.function_call.is_some(),
                 delta.refusal.as_ref().map(|r| r.len()),
-                delta.reasoning_content.as_ref().map(|r| r.len()));
+                delta.reasoning_content.as_ref().map(|r| r.len())
+            );
             // Handle reasoning content (GLM extension)
             if let Some(reasoning) = &delta.reasoning_content
-                && !reasoning.is_empty() {
-                    if !state.emit.is_reasoning_added {
-                        let reasoning_id = format!("reasoning_{}", id);
-                        let reasoning_idx = state.indices.next_output_index;
-                        state.indices.next_output_index += 1;
-                        state.indices.reasoning_output_index = Some(reasoning_idx);
-                        events.push(ResponseStreamEvent::ReasoningAdded {
-                            output_index: reasoning_idx,
-                            item_id: reasoning_id.clone(),
-                        });
-                        state.emit.is_reasoning_added = true;
-                    }
-                    let reasoning_idx = state.indices.reasoning_output_index.unwrap_or(0);
-                    events.push(ResponseStreamEvent::ReasoningDelta {
-                        item_id: format!("reasoning_{}", id),
+                && !reasoning.is_empty()
+            {
+                if !state.emit.is_reasoning_added {
+                    let reasoning_id = format!("reasoning_{}", id);
+                    let reasoning_idx = state.indices.next_output_index;
+                    state.indices.next_output_index += 1;
+                    state.indices.reasoning_output_index = Some(reasoning_idx);
+                    events.push(ResponseStreamEvent::ReasoningAdded {
                         output_index: reasoning_idx,
-                        content_index: 0,
-                        delta: reasoning.clone(),
+                        item_id: reasoning_id.clone(),
                     });
-                    state.text.reasoning_text.push_str(reasoning);
+                    state.emit.is_reasoning_added = true;
                 }
+                let reasoning_idx = state.indices.reasoning_output_index.unwrap_or(0);
+                events.push(ResponseStreamEvent::ReasoningDelta {
+                    item_id: format!("reasoning_{}", id),
+                    output_index: reasoning_idx,
+                    content_index: 0,
+                    delta: reasoning.clone(),
+                });
+                state.text.reasoning_text.push_str(reasoning);
+            }
 
             // Handle text content
             if let Some(content) = &delta.content {
@@ -86,35 +89,39 @@ pub fn chat_chunk_to_response_events(
 
                 if !text.is_empty() {
                     // Parse thinking tags (<think> or <thought>) from content
-                    let (actual_text, reasoning_delta, new_is_thinking) =
-                        parse_streaming_thinking(&text, state.text.is_thinking, &mut state.text.thinking_buffer);
+                    let (actual_text, reasoning_delta, new_is_thinking) = parse_streaming_thinking(
+                        &text,
+                        state.text.is_thinking,
+                        &mut state.text.thinking_buffer,
+                    );
                     let sanitized_actual_text = sanitize_pseudo_tool_markup(&actual_text);
 
                     state.text.is_thinking = new_is_thinking;
 
                     // Emit reasoning events if we have reasoning content
                     if let Some(reasoning) = reasoning_delta
-                        && !reasoning.is_empty() {
-                            if !state.emit.is_reasoning_added {
-                                let reasoning_id = format!("reasoning_{}", id);
-                                let reasoning_idx = state.indices.next_output_index;
-                                state.indices.next_output_index += 1;
-                                state.indices.reasoning_output_index = Some(reasoning_idx);
-                                events.push(ResponseStreamEvent::ReasoningAdded {
-                                    output_index: reasoning_idx,
-                                    item_id: reasoning_id.clone(),
-                                });
-                                state.emit.is_reasoning_added = true;
-                            }
-                            let reasoning_idx = state.indices.reasoning_output_index.unwrap_or(0);
-                            events.push(ResponseStreamEvent::ReasoningDelta {
-                                item_id: format!("reasoning_{}", id),
+                        && !reasoning.is_empty()
+                    {
+                        if !state.emit.is_reasoning_added {
+                            let reasoning_id = format!("reasoning_{}", id);
+                            let reasoning_idx = state.indices.next_output_index;
+                            state.indices.next_output_index += 1;
+                            state.indices.reasoning_output_index = Some(reasoning_idx);
+                            events.push(ResponseStreamEvent::ReasoningAdded {
                                 output_index: reasoning_idx,
-                                content_index: 0,
-                                delta: reasoning.clone(),
+                                item_id: reasoning_id.clone(),
                             });
-                            state.text.reasoning_text.push_str(&reasoning);
+                            state.emit.is_reasoning_added = true;
                         }
+                        let reasoning_idx = state.indices.reasoning_output_index.unwrap_or(0);
+                        events.push(ResponseStreamEvent::ReasoningDelta {
+                            item_id: format!("reasoning_{}", id),
+                            output_index: reasoning_idx,
+                            content_index: 0,
+                            delta: reasoning.clone(),
+                        });
+                        state.text.reasoning_text.push_str(&reasoning);
+                    }
 
                     // Emit text events if we have actual content
                     if !sanitized_actual_text.is_empty() {
@@ -206,27 +213,54 @@ pub fn chat_chunk_to_response_events(
                     normalized_tool_calls.len()
                 );
                 for tc in &normalized_tool_calls {
-                    tracing::debug!("[TOOL_CALL] Tool call: id={:?}, index={}, name={:?}, args_len={}",
-                        tc.id, tc.index, tc.function.name, tc.function.arguments.as_ref().map(|a| a.len()).unwrap_or(0));
+                    tracing::debug!(
+                        "[TOOL_CALL] Tool call: id={:?}, index={}, name={:?}, args_len={}",
+                        tc.id,
+                        tc.index,
+                        tc.function.name,
+                        tc.function.arguments.as_ref().map(|a| a.len()).unwrap_or(0)
+                    );
 
                     let existing_idx = if let Some(tc_id) = tc.id.as_ref() {
-                        state.tool_calls.current.iter().position(|t| t.upstream_id.as_ref() == Some(tc_id))
+                        state
+                            .tool_calls
+                            .current
+                            .iter()
+                            .position(|t| t.upstream_id.as_ref() == Some(tc_id))
                     } else {
-                        state.tool_calls.current.iter().position(|t| t.chat_api_index == tc.index)
+                        state
+                            .tool_calls
+                            .current
+                            .iter()
+                            .position(|t| t.chat_api_index == tc.index)
                     };
-                    tracing::debug!("[TOOL_CALL] existing_idx={:?}, tc.index={}", existing_idx, tc.index);
+                    tracing::debug!(
+                        "[TOOL_CALL] existing_idx={:?}, tc.index={}",
+                        existing_idx,
+                        tc.index
+                    );
 
                     if existing_idx.is_none() {
-                        let tc_id = tc.id.clone().unwrap_or_else(|| {
-                            format!("call_{}_{}", tc.index, state.response_id)
-                        });
+                        let tc_id = tc
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("call_{}_{}", tc.index, state.response_id));
                         let func_output_index = state.indices.next_output_index;
                         state.indices.next_output_index += 1;
                         let func_id = format!("func_{}_{}", func_output_index, state.response_id);
                         let initial_name = tc.function.name.clone().unwrap_or_default();
-                        let item_type = map_tool_name_to_stream_item_type(&initial_name, request_context);
-                        tracing::debug!("[TOOL_CALL] Creating new tool call: func_id={}, output_index={}", func_id, func_output_index);
-                        let name_for_item = if initial_name.is_empty() { None } else { Some(initial_name.clone()) };
+                        let item_type =
+                            map_tool_name_to_stream_item_type(&initial_name, request_context);
+                        tracing::debug!(
+                            "[TOOL_CALL] Creating new tool call: func_id={}, output_index={}",
+                            func_id,
+                            func_output_index
+                        );
+                        let name_for_item = if initial_name.is_empty() {
+                            None
+                        } else {
+                            Some(initial_name.clone())
+                        };
                         events.push(ResponseStreamEvent::OutputItemAdded {
                             output_index: func_output_index,
                             item_id: func_id.clone(),
@@ -255,7 +289,10 @@ pub fn chat_chunk_to_response_events(
                             item_id: func_id,
                             delta: initial_args,
                         });
-                        tracing::debug!("[TOOL_CALL] Emitted OutputItemAdded and FunctionCallArgumentsDelta, total events now: {}", events.len());
+                        tracing::debug!(
+                            "[TOOL_CALL] Emitted OutputItemAdded and FunctionCallArgumentsDelta, total events now: {}",
+                            events.len()
+                        );
                     } else if let Some(idx) = existing_idx {
                         let tc_state = &mut state.tool_calls.current[idx];
                         if let Some(args) = &tc.function.arguments {
@@ -263,15 +300,16 @@ pub fn chat_chunk_to_response_events(
                             // incremental deltas. Detect cumulative via prefix match and slice
                             // out the new suffix; otherwise append the chunk verbatim.
                             let prev_len = tc_state.arguments.len();
-                            let new_delta = if args.len() > prev_len && args.starts_with(&tc_state.arguments) {
-                                let delta = args[prev_len..].to_string();
-                                tc_state.arguments = args.clone();
-                                delta
-                            } else {
-                                let delta = args.clone();
-                                tc_state.arguments.push_str(args);
-                                delta
-                            };
+                            let new_delta =
+                                if args.len() > prev_len && args.starts_with(&tc_state.arguments) {
+                                    let delta = args[prev_len..].to_string();
+                                    tc_state.arguments = args.clone();
+                                    delta
+                                } else {
+                                    let delta = args.clone();
+                                    tc_state.arguments.push_str(args);
+                                    delta
+                                };
 
                             if !new_delta.is_empty() {
                                 events.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
@@ -282,20 +320,32 @@ pub fn chat_chunk_to_response_events(
                             }
                         }
                         if let Some(name) = &tc.function.name
-                            && !name.is_empty() && tc_state.name.is_empty() {
-                                tc_state.name = name.clone();
-                            }
+                            && !name.is_empty()
+                            && tc_state.name.is_empty()
+                        {
+                            tc_state.name = name.clone();
+                        }
                     }
                 }
             }
 
             // Handle finish
-            tracing::debug!("[FINISH_REASON] choice.finish_reason={:?}, current_tool_calls_len={}", choice.finish_reason, state.tool_calls.current.len());
+            tracing::debug!(
+                "[FINISH_REASON] choice.finish_reason={:?}, current_tool_calls_len={}",
+                choice.finish_reason,
+                state.tool_calls.current.len()
+            );
             if let Some(reason) = &choice.finish_reason {
                 tracing::debug!("[FINISH_REASON] reason={}", reason);
                 if matches!(
                     reason.as_str(),
-                    "stop" | "length" | "tool_calls" | "function_call" | "content_filter" | "refusal" | "refuse"
+                    "stop"
+                        | "length"
+                        | "tool_calls"
+                        | "function_call"
+                        | "content_filter"
+                        | "refusal"
+                        | "refuse"
                 ) {
                     apply_finish_reason(state, reason);
                     events.extend(finalize_output(state, &id));
@@ -304,8 +354,14 @@ pub fn chat_chunk_to_response_events(
         }
     }
 
-    tracing::debug!("[CHUNK_EVENTS] Generated {} events: {:?}", events.len(),
-        events.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>());
+    tracing::debug!(
+        "[CHUNK_EVENTS] Generated {} events: {:?}",
+        events.len(),
+        events
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
     Ok(events)
 }
 
@@ -330,8 +386,12 @@ fn apply_finish_reason(state: &mut StreamState, reason: &str) {
 fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent> {
     let mut events = Vec::new();
 
-    tracing::debug!("[FINALIZE] is_output_item_added={}, is_reasoning_added={}, current_tool_calls={}",
-        state.emit.is_output_item_added, state.emit.is_reasoning_added, state.tool_calls.current.len());
+    tracing::debug!(
+        "[FINALIZE] is_output_item_added={}, is_reasoning_added={}, current_tool_calls={}",
+        state.emit.is_output_item_added,
+        state.emit.is_reasoning_added,
+        state.tool_calls.current.len()
+    );
 
     // Finalize any pending tool calls
     for tc_state in state.tool_calls.current.drain(..) {
@@ -429,9 +489,11 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
             arguments: None,
             text: None,
             refusal: None,
-            summary: Some(vec![crate::types::response_api::ReasoningSummaryPart::SummaryText {
-                text: state.text.reasoning_text.clone(),
-            }]),
+            summary: Some(vec![
+                crate::types::response_api::ReasoningSummaryPart::SummaryText {
+                    text: state.text.reasoning_text.clone(),
+                },
+            ]),
         });
     }
 
@@ -442,7 +504,9 @@ fn finalize_output(state: &mut StreamState, id: &str) -> Vec<ResponseStreamEvent
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::chat_api::{ChatDelta, ChatStreamChoice, Content, ToolCallDelta, FunctionCallDelta};
+    use crate::types::chat_api::{
+        ChatDelta, ChatStreamChoice, Content, FunctionCallDelta, ToolCallDelta,
+    };
 
     #[test]
     fn test_first_chunk_generates_created_event() {
@@ -469,9 +533,95 @@ mod tests {
         let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
         let events = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
 
-        assert!(events.iter().any(|e| matches!(e, ResponseStreamEvent::Created { .. })));
-        assert!(events.iter().any(|e| matches!(e, ResponseStreamEvent::InProgress { .. })));
-        assert!(events.iter().any(|e| matches!(e, ResponseStreamEvent::OutputTextDelta { delta, .. } if delta == "Hello")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ResponseStreamEvent::Created { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ResponseStreamEvent::InProgress { .. }))
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, ResponseStreamEvent::OutputTextDelta { delta, .. } if delta == "Hello")
+        ));
+    }
+
+    #[test]
+    fn test_streaming_completed_usage_backfills_required_token_counts() {
+        let chunk = ChatStreamChunk {
+            id: Some("chat_123".to_string()),
+            object: Some("chat.completion.chunk".to_string()),
+            created: Some(1234567890),
+            model: Some("gpt-4o".to_string()),
+            choices: vec![ChatStreamChoice {
+                index: 0,
+                delta: Some(ChatDelta {
+                    role: Some("assistant".to_string()),
+                    content: Some(Content::String("Hello".to_string())),
+                    tool_calls: None,
+                    function_call: None,
+                    reasoning_content: None,
+                    refusal: None,
+                }),
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(crate::types::chat_api::ChatUsage {
+                prompt_tokens: Some(12),
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            }),
+        };
+
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
+        state.update_usage(&chunk);
+        let _ = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
+        let response = state.build_response_object(None);
+        let response_json = serde_json::to_value(&response).unwrap();
+        let usage = &response_json["usage"];
+
+        assert_eq!(usage["input_tokens"], 12);
+        assert_eq!(usage["output_tokens"], 0);
+        assert_eq!(usage["total_tokens"], 12);
+    }
+
+    #[test]
+    fn test_streaming_completed_usage_omitted_when_no_counts() {
+        let chunk = ChatStreamChunk {
+            id: Some("chat_123".to_string()),
+            object: Some("chat.completion.chunk".to_string()),
+            created: Some(1234567890),
+            model: Some("gpt-4o".to_string()),
+            choices: vec![ChatStreamChoice {
+                index: 0,
+                delta: Some(ChatDelta {
+                    role: Some("assistant".to_string()),
+                    content: Some(Content::String("Hello".to_string())),
+                    tool_calls: None,
+                    function_call: None,
+                    reasoning_content: None,
+                    refusal: None,
+                }),
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(crate::types::chat_api::ChatUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            }),
+        };
+
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
+        state.update_usage(&chunk);
+        let _ = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
+        let response = state.build_response_object(None);
+
+        assert!(response.usage.is_none());
     }
 
     #[test]
@@ -516,7 +666,8 @@ mod tests {
     fn test_parse_streaming_thinking_basic() {
         use crate::convert::util::parse_streaming_thinking;
         let mut buffer = String::new();
-        let (actual, reasoning, is_thinking) = parse_streaming_thinking("Hello world", false, &mut buffer);
+        let (actual, reasoning, is_thinking) =
+            parse_streaming_thinking("Hello world", false, &mut buffer);
         assert_eq!(actual, "Hello world");
         assert!(reasoning.is_none());
         assert!(!is_thinking);
@@ -541,20 +692,14 @@ mod tests {
         use crate::convert::util::parse_streaming_thinking;
         let mut buffer = String::new();
 
-        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
-            "<think>\npartial",
-            false,
-            &mut buffer,
-        );
+        let (actual, reasoning, is_thinking) =
+            parse_streaming_thinking("<think>\npartial", false, &mut buffer);
         assert_eq!(actual, "");
         assert!(reasoning.is_none());
         assert!(is_thinking);
 
-        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
-            " content\n</think>\n\nfinal",
-            is_thinking,
-            &mut buffer,
-        );
+        let (actual, reasoning, is_thinking) =
+            parse_streaming_thinking(" content\n</think>\n\nfinal", is_thinking, &mut buffer);
         assert_eq!(actual, "\n\nfinal");
         assert_eq!(reasoning, Some("\npartial content\n".to_string()));
         assert!(!is_thinking);
@@ -564,11 +709,8 @@ mod tests {
     fn test_parse_streaming_thought_tag() {
         use crate::convert::util::parse_streaming_thinking;
         let mut buffer = String::new();
-        let (actual, reasoning, is_thinking) = parse_streaming_thinking(
-            "<thought>reasoning</thought>actual",
-            false,
-            &mut buffer,
-        );
+        let (actual, reasoning, is_thinking) =
+            parse_streaming_thinking("<thought>reasoning</thought>actual", false, &mut buffer);
         assert_eq!(actual, "actual");
         assert_eq!(reasoning, Some("reasoning".to_string()));
         assert!(!is_thinking);
@@ -598,7 +740,10 @@ mod tests {
         };
         let _ = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
         assert_eq!(state.emit.final_status, "incomplete");
-        assert_eq!(state.emit.incomplete_reason.as_deref(), Some("content_filter"));
+        assert_eq!(
+            state.emit.incomplete_reason.as_deref(),
+            Some("content_filter")
+        );
     }
 
     #[test]
@@ -624,9 +769,11 @@ mod tests {
             usage: None,
         };
         let events = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, ResponseStreamEvent::RefusalDelta { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ResponseStreamEvent::RefusalDelta { .. }))
+        );
     }
 
     #[test]

@@ -1,9 +1,11 @@
 //! Tool conversion utilities for Responses API → Chat API.
 
-use crate::types::chat_api::{ChatTool, ChatToolChoice, ChatToolChoiceMode, FunctionChoice, FunctionDefinition, NamedToolChoice};
+use crate::types::chat_api::{
+    ChatTool, ChatToolChoice, ChatToolChoiceMode, FunctionChoice, FunctionDefinition,
+    NamedToolChoice,
+};
 use crate::types::response_api::{
-    Tool as ResponseTool, ToolChoice as ResponseToolChoice,
-    ToolType as ResponseToolType,
+    Tool as ResponseTool, ToolChoice as ResponseToolChoice, ToolType as ResponseToolType,
 };
 
 /// Convert Responses API tools to Chat API tools.

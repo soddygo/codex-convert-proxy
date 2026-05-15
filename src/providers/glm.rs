@@ -46,6 +46,9 @@ impl Provider for GLMProvider {
             token_limit_field: TokenLimitField::MaxTokens,
             supports_developer_role: false,
             flatten_request_content: true,
+            supports_tool_strict: true,
+            supports_stream_options: true,
+            supports_parallel_tool_calls: true,
         }
     }
 
@@ -72,15 +75,15 @@ impl Provider for GLMProvider {
         // Ensure delta content is string format
         for choice in &mut chunk.choices {
             if let Some(delta) = &mut choice.delta
-                && let Some(content) = &delta.content {
-                    let text = content.as_text();
-                    if !text.is_empty() {
-                        delta.content = Some(crate::types::chat_api::Content::String(text));
-                    }
+                && let Some(content) = &delta.content
+            {
+                let text = content.as_text();
+                if !text.is_empty() {
+                    delta.content = Some(crate::types::chat_api::Content::String(text));
                 }
+            }
         }
     }
-
 }
 
 #[cfg(test)]

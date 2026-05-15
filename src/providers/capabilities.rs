@@ -21,6 +21,8 @@ pub enum TokenLimitField {
 pub enum ToolChoiceSupport {
     /// Preserve all OpenAI Chat API tool_choice modes and named choices.
     Full,
+    /// Omit `tool_choice` entirely.
+    Unsupported,
     /// Only `auto` is known-safe.
     AutoOnly,
     /// Only `none` and `auto` are known-safe.
@@ -35,6 +37,9 @@ pub struct ProviderCapabilities {
     pub token_limit_field: TokenLimitField,
     pub supports_developer_role: bool,
     pub flatten_request_content: bool,
+    pub supports_tool_strict: bool,
+    pub supports_stream_options: bool,
+    pub supports_parallel_tool_calls: bool,
 }
 
 impl Default for ProviderCapabilities {
@@ -45,6 +50,9 @@ impl Default for ProviderCapabilities {
             token_limit_field: TokenLimitField::MaxTokens,
             supports_developer_role: false,
             flatten_request_content: false,
+            supports_tool_strict: true,
+            supports_stream_options: true,
+            supports_parallel_tool_calls: true,
         }
     }
 }
@@ -65,7 +73,22 @@ impl ProviderCapabilities {
             request.tools = None;
             request.tool_choice = None;
         } else {
-            request.tool_choice = sanitize_tool_choice(request.tool_choice.take(), self.tool_choice);
+            if !self.supports_tool_strict
+                && let Some(tools) = request.tools.as_mut()
+            {
+                for tool in tools {
+                    tool.function.strict = None;
+                }
+            }
+            request.tool_choice =
+                sanitize_tool_choice(request.tool_choice.take(), self.tool_choice);
+        }
+
+        if !self.supports_stream_options {
+            request.stream_options = None;
+        }
+        if !self.supports_parallel_tool_calls {
+            request.parallel_tool_calls = None;
         }
     }
 }
@@ -76,7 +99,10 @@ fn sanitize_tool_choice(
 ) -> Option<ChatToolChoice> {
     match support {
         ToolChoiceSupport::Full => choice,
-        ToolChoiceSupport::AutoOnly => choice.map(|_| ChatToolChoice::Mode(ChatToolChoiceMode::Auto)),
+        ToolChoiceSupport::Unsupported => None,
+        ToolChoiceSupport::AutoOnly => {
+            choice.map(|_| ChatToolChoice::Mode(ChatToolChoiceMode::Auto))
+        }
         ToolChoiceSupport::AutoAndNone => match choice {
             Some(ChatToolChoice::Mode(ChatToolChoiceMode::None)) => {
                 Some(ChatToolChoice::Mode(ChatToolChoiceMode::None))

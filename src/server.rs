@@ -2,11 +2,17 @@
 //!
 //! This module handles the initialization and startup of the pingora proxy server.
 
-use pingora_core::server::configuration::ServerConf;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use pingora_core::server::Server;
+use pingora_core::server::configuration::ServerConf;
 use pingora_proxy::http_proxy_service;
 use tracing::info;
 
+use crate::config::{BackendRouter, ProxyConfig};
+use crate::providers::{Provider, create_provider};
 use crate::proxy::CodexProxy;
 
 /// Graceful shutdown timeout in seconds (wait for existing requests to complete)
@@ -20,10 +26,7 @@ const GRACEFUL_PERIOD: u64 = 10;
 /// This function bootstraps the pingora server, adds the CodexProxy service,
 /// and runs it forever. The server handles graceful shutdown automatically
 /// (SIGTERM for graceful, SIGINT for fast shutdown).
-pub fn start_proxy_server(
-    proxy: CodexProxy,
-    listen: &str,
-) {
+pub fn start_proxy_server(proxy: CodexProxy, listen: &str) {
     // Create server configuration with custom graceful shutdown settings
     let mut server_conf = ServerConf::new().expect("Failed to create server config");
     server_conf.grace_period_seconds = Some(GRACEFUL_PERIOD);
@@ -37,7 +40,41 @@ pub fn start_proxy_server(
     server.add_service(http_proxy);
 
     info!("Server listening on {}", listen);
-    info!("Graceful shutdown: {}s grace period, {}s timeout",
-          GRACEFUL_PERIOD, GRACEFUL_SHUTDOWN_TIMEOUT);
+    info!(
+        "Graceful shutdown: {}s grace period, {}s timeout",
+        GRACEFUL_PERIOD, GRACEFUL_SHUTDOWN_TIMEOUT
+    );
     server.run_forever();
+}
+
+/// Build the proxy server from a resolved config.
+pub fn build_proxy(config: ProxyConfig) -> anyhow::Result<CodexProxy> {
+    if config.backends.is_empty() {
+        anyhow::bail!("No backend configured");
+    }
+
+    let router = Arc::new(BackendRouter::new(config.backends.clone())?);
+    let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+    for backend in &config.backends {
+        let name = backend.name.clone();
+        if let std::collections::hash_map::Entry::Vacant(entry) = providers.entry(name.clone()) {
+            match create_provider(&name) {
+                Ok(provider) => {
+                    entry.insert(provider);
+                }
+                Err(err) => {
+                    eprintln!("Warning: Failed to create provider for {name}: {err}");
+                }
+            }
+        }
+    }
+
+    let log_dir = std::path::PathBuf::from(&config.log_dir);
+    Ok(CodexProxy::with_conversation_ttl(
+        router,
+        providers,
+        config.log_body,
+        log_dir,
+        Duration::from_secs(config.conversation_ttl_seconds),
+    ))
 }

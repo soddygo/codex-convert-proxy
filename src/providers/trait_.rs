@@ -4,8 +4,8 @@ use tracing::info;
 
 use super::capabilities::{ProviderCapabilities, ProviderExtensions};
 use crate::error::ConversionError;
-use crate::types::chat_api::{ChatResponse, ChatStreamChunk};
 use crate::convert::ResponseRequestContext;
+use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -120,6 +120,9 @@ pub trait Provider: Send + Sync + 'static {
     ) -> Result<ProviderExtensions, ConversionError> {
         Ok(ProviderExtensions::default())
     }
+
+    /// Final provider-specific request normalization after capability sanitization.
+    fn sanitize_request(&self, _request: &mut ChatRequest) {}
 
     /// Transform response after receiving from provider.
     ///

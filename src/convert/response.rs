@@ -1,13 +1,15 @@
 //! Response conversion: Chat API → Responses API.
 
+use super::util::{
+    extract_queries_from_arguments, map_tool_name_to_output_type, parse_thought_tags,
+};
+use crate::convert::ResponseRequestContext;
 use crate::error::ConversionError;
 use crate::types::chat_api::{ChatMessageAnnotation, ChatResponse, Content};
 use crate::types::response_api::{
-    InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseAnnotation, ResponseContentPart, ResponseObject,
-    ResponseOutputItem, ResponseTextConfig, ResponseTextFormat, Usage,
+    OutputItemType, ResponseAnnotation, ResponseContentPart, ResponseObject, ResponseOutputItem,
+    ResponseTextConfig, ResponseTextFormat, Usage,
 };
-use crate::convert::ResponseRequestContext;
-use super::util::{extract_queries_from_arguments, map_tool_name_to_output_type, parse_thought_tags};
 
 /// Convert a Chat API response to a Responses API ResponseObject.
 pub fn chat_to_response(chat_resp: ChatResponse) -> Result<ResponseObject, ConversionError> {
@@ -56,7 +58,6 @@ pub fn chat_to_response_with_context(
         })
         .unwrap_or_default();
 
-
     let mut outputs = Vec::new();
     let finish_reason = choice.finish_reason.as_deref().unwrap_or("stop");
     let (response_status, incomplete_details) = match finish_reason {
@@ -79,24 +80,27 @@ pub fn chat_to_response_with_context(
 
         // Add reasoning output if present
         if let Some(ref reasoning_text) = reasoning
-            && !reasoning_text.is_empty() {
-                outputs.push(ResponseOutputItem {
-                    id: format!("reasoning_{}", chat_resp.id),
-                    item_type: OutputItemType::Reasoning,
-                    status: None,
-                    content: Some(vec![]),
-                    summary: Some(vec![crate::types::response_api::ReasoningSummaryPart::SummaryText {
+            && !reasoning_text.is_empty()
+        {
+            outputs.push(ResponseOutputItem {
+                id: format!("reasoning_{}", chat_resp.id),
+                item_type: OutputItemType::Reasoning,
+                status: None,
+                content: Some(vec![]),
+                summary: Some(vec![
+                    crate::types::response_api::ReasoningSummaryPart::SummaryText {
                         text: reasoning_text.clone(),
-                    }]),
-                    role: None,
-                    name: None,
-                    arguments: None,
-                    call_id: None,
-                    queries: None,
-                    results: None,
-                    namespace: None,
-                });
-            }
+                    },
+                ]),
+                role: None,
+                name: None,
+                arguments: None,
+                call_id: None,
+                queries: None,
+                results: None,
+                namespace: None,
+            });
+        }
 
         // Add text output if present (after stripping thinking tags)
         if !actual_content.is_empty() {
@@ -146,52 +150,47 @@ pub fn chat_to_response_with_context(
         });
     }
     for tc in &normalized_tool_calls {
-            let mapped_type = map_tool_name_to_output_type(
-                &tc.function.name,
-                request_context.map(|ctx| &ctx.tools),
-            );
-            let (queries, results) = if mapped_type != OutputItemType::FunctionCall {
-                (extract_queries_from_arguments(&tc.function.arguments), Some(serde_json::Value::Null))
-            } else {
-                (None, None)
-            };
+        let mapped_type =
+            map_tool_name_to_output_type(&tc.function.name, request_context.map(|ctx| &ctx.tools));
+        let (queries, results) = if mapped_type != OutputItemType::FunctionCall {
+            (
+                extract_queries_from_arguments(&tc.function.arguments),
+                Some(serde_json::Value::Null),
+            )
+        } else {
+            (None, None)
+        };
 
-            outputs.push(ResponseOutputItem {
-                id: format!("fc_{}", tc.id),
-                item_type: mapped_type,
-                status: Some("completed".to_string()),
-                content: None,
-                role: None,
-                name: Some(tc.function.name.clone()),
-                arguments: Some(tc.function.arguments.clone()),
-                call_id: Some(tc.id.clone()),
-                queries,
-                results,
-                summary: None,
-                namespace: None,
-            });
+        outputs.push(ResponseOutputItem {
+            id: format!("fc_{}", tc.id),
+            item_type: mapped_type,
+            status: Some("completed".to_string()),
+            content: None,
+            role: None,
+            name: Some(tc.function.name.clone()),
+            arguments: Some(tc.function.arguments.clone()),
+            call_id: Some(tc.id.clone()),
+            queries,
+            results,
+            summary: None,
+            namespace: None,
+        });
     }
 
-    let usage = chat_resp.usage.map(|u| Usage {
-        input_tokens: u.prompt_tokens.map(|t| t as i64),
-        input_tokens_details: Some(InputTokensDetails {
-            cached_tokens: u
-                .prompt_tokens_details
+    let usage = chat_resp.usage.and_then(|u| {
+        Usage::from_optional_counts(
+            u.prompt_tokens.map(|t| t as i64),
+            u.completion_tokens.map(|t| t as i64),
+            u.total_tokens.map(|t| t as i64),
+            u.prompt_tokens_details
                 .as_ref()
                 .and_then(|d| d.cached_tokens)
-                .map(|v| v as i64)
-                .unwrap_or(0),
-        }),
-        output_tokens: u.completion_tokens.map(|t| t as i64),
-        output_tokens_details: Some(OutputTokensDetails {
-            reasoning_tokens: u
-                .completion_tokens_details
+                .map(|v| v as i64),
+            u.completion_tokens_details
                 .as_ref()
                 .and_then(|d| d.reasoning_tokens)
-                .map(|v| v as i64)
-                .unwrap_or(0),
-        }),
-        total_tokens: u.total_tokens.map(|t| t as i64),
+                .map(|v| v as i64),
+        )
     });
 
     let default_text = Some(ResponseTextConfig {
@@ -216,7 +215,7 @@ pub fn chat_to_response_with_context(
         instructions: request_context.and_then(|ctx| ctx.instructions.clone()),
         max_output_tokens: request_context.and_then(|ctx| ctx.max_output_tokens),
         max_tool_calls: None,
-        input: None,  // Input not available in non-streaming context
+        input: None, // Input not available in non-streaming context
         output: outputs,
         // Spec default: parallel_tool_calls=true. Honor request context when present.
         parallel_tool_calls: request_context
@@ -226,7 +225,9 @@ pub fn chat_to_response_with_context(
         reasoning: request_context.and_then(|ctx| ctx.reasoning.clone()),
         store: request_context.and_then(|ctx| ctx.store),
         temperature: request_context.and_then(|ctx| ctx.temperature),
-        text: request_context.and_then(|ctx| ctx.text.clone()).or(default_text),
+        text: request_context
+            .and_then(|ctx| ctx.text.clone())
+            .or(default_text),
         tool_choice: request_context
             .map(|ctx| ctx.tool_choice.clone())
             .unwrap_or_default(),
@@ -273,10 +274,12 @@ fn extract_content(content: &Content) -> Option<String> {
 mod tests {
     use super::*;
     use crate::types::chat_api::{
-        ChatChoice, ChatMessage, ChatMessageAnnotation, CompletionTokensDetails, Content, MessageRole,
-        PromptTokensDetails,
+        ChatChoice, ChatMessage, ChatMessageAnnotation, CompletionTokensDetails, Content,
+        MessageRole, PromptTokensDetails,
     };
-    use crate::types::response_api::{InputItemOrString, ResponseRequest, Tool, ToolChoice, ToolType};
+    use crate::types::response_api::{
+        InputItemOrString, ResponseRequest, Tool, ToolChoice, ToolType,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -383,14 +386,90 @@ mod tests {
             _ => panic!("expected output text"),
         }
         let usage = response.usage.unwrap();
-        assert_eq!(
-            usage.input_tokens_details.unwrap().cached_tokens,
-            3
-        );
-        assert_eq!(
-            usage.output_tokens_details.unwrap().reasoning_tokens,
-            7
-        );
+        assert_eq!(usage.input_tokens_details.unwrap().cached_tokens, 3);
+        assert_eq!(usage.output_tokens_details.unwrap().reasoning_tokens, 7);
+    }
+
+    #[test]
+    fn test_partial_usage_backfills_required_response_token_counts() {
+        let chat_resp = ChatResponse {
+            id: "chat_partial_usage".to_string(),
+            object_name: "chat.completion".to_string(),
+            created: 1234567890,
+            model: "gpt-4o".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: Content::String("Hello".to_string()),
+                    name: None,
+                    annotations: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(crate::types::chat_api::ChatUsage {
+                prompt_tokens: Some(10),
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            }),
+            service_tier: None,
+            system_fingerprint: None,
+        };
+
+        let response = chat_to_response(chat_resp).unwrap();
+        let usage = response.usage.as_ref().expect("usage should be present");
+
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.output_tokens, Some(0));
+        assert_eq!(usage.total_tokens, Some(10));
+
+        let usage_json = serde_json::to_value(usage).unwrap();
+        assert_eq!(usage_json["input_tokens"], 10);
+        assert_eq!(usage_json["output_tokens"], 0);
+        assert_eq!(usage_json["total_tokens"], 10);
+    }
+
+    #[test]
+    fn test_empty_usage_is_not_fabricated() {
+        let chat_resp = ChatResponse {
+            id: "chat_empty_usage".to_string(),
+            object_name: "chat.completion".to_string(),
+            created: 1234567890,
+            model: "gpt-4o".to_string(),
+            choices: vec![ChatChoice {
+                index: 0,
+                message: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: Content::String("Hello".to_string()),
+                    name: None,
+                    annotations: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    function_call: None,
+                    refusal: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(crate::types::chat_api::ChatUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            }),
+            service_tier: None,
+            system_fingerprint: None,
+        };
+
+        let response = chat_to_response(chat_resp).unwrap();
+
+        assert!(response.usage.is_none());
     }
 
     #[test]
@@ -520,16 +599,20 @@ mod tests {
         assert!(reasoning.is_none());
 
         // Single thought tag
-        let (content, reasoning) = parse_thought_tags("<thought>I should search</thought>Hello world");
+        let (content, reasoning) =
+            parse_thought_tags("<thought>I should search</thought>Hello world");
         assert_eq!(content, "Hello world");
         assert_eq!(reasoning, Some("I should search".to_string()));
 
         // Multiple thought tags - reasoning parts are joined with newlines
         let (content, reasoning) = parse_thought_tags(
-            "<thought>Step 1: analyze</thought>Result1<thought>Step 2: conclude</thought>Final answer"
+            "<thought>Step 1: analyze</thought>Result1<thought>Step 2: conclude</thought>Final answer",
         );
         assert_eq!(content, "Result1Final answer");
-        assert_eq!(reasoning, Some("Step 1: analyze\n\nStep 2: conclude".to_string()));
+        assert_eq!(
+            reasoning,
+            Some("Step 1: analyze\n\nStep 2: conclude".to_string())
+        );
 
         // Unclosed thought tag
         let (content, reasoning) = parse_thought_tags("<thought>unclosed Hello");
@@ -545,14 +628,14 @@ mod tests {
     #[test]
     fn test_parse_think_tags() {
         // MiniMax uses <think> tags instead of <thought>
-        let (content, reasoning) = parse_thought_tags("<think>\n分析当前目录\n</think>\n\n让我看看项目");
+        let (content, reasoning) =
+            parse_thought_tags("<think>\n分析当前目录\n</think>\n\n让我看看项目");
         assert_eq!(content, "让我看看项目");
         assert_eq!(reasoning, Some("\n分析当前目录\n".to_string()));
 
         // Multiple think tags
-        let (content, reasoning) = parse_thought_tags(
-            "<think>Step 1</think>Result1<think>Step 2</think>Final"
-        );
+        let (content, reasoning) =
+            parse_thought_tags("<think>Step 1</think>Result1<think>Step 2</think>Final");
         assert_eq!(content, "Result1Final");
         assert_eq!(reasoning, Some("Step 1\n\nStep 2".to_string()));
 
@@ -633,10 +716,12 @@ mod tests {
             system_fingerprint: None,
         };
         let response = chat_to_response(chat_resp).unwrap();
-        assert!(response
-            .output
-            .iter()
-            .any(|item| item.item_type == OutputItemType::FunctionCall));
+        assert!(
+            response
+                .output
+                .iter()
+                .any(|item| item.item_type == OutputItemType::FunctionCall)
+        );
     }
 
     #[test]
@@ -669,9 +754,11 @@ mod tests {
             .output
             .iter()
             .find(|item| {
-                item.content
-                    .as_ref()
-                    .is_some_and(|parts| parts.iter().any(|p| matches!(p, ResponseContentPart::Refusal { .. })))
+                item.content.as_ref().is_some_and(|parts| {
+                    parts
+                        .iter()
+                        .any(|p| matches!(p, ResponseContentPart::Refusal { .. }))
+                })
             })
             .expect("refusal content should exist");
         assert_eq!(refusal_msg.item_type, OutputItemType::Message);
@@ -681,7 +768,10 @@ mod tests {
             .filter(|item| item.item_type == OutputItemType::Message)
             .count();
         assert_eq!(message_count, 1, "refusal must be in same message item");
-        let parts = refusal_msg.content.as_ref().expect("message content should exist");
+        let parts = refusal_msg
+            .content
+            .as_ref()
+            .expect("message content should exist");
         assert!(parts.iter().any(|p| matches!(
             p,
             ResponseContentPart::Refusal { refusal } if refusal == "I cannot help with that."

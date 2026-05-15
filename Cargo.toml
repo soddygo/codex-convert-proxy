@@ -24,11 +24,22 @@ server = [
     "clap",
     "tracing-subscriber",
     "tracing-appender",
+    "dep:codex-utils-rustls-provider",
     "pingora/lb",
     "pingora/rustls",
     "pingora-core/rustls",
     "pingora-http",
     "pingora-proxy/rustls",
+]
+
+# ACP: start a Codex ACP agent with an embedded conversion proxy.
+acp = [
+    "server",
+    "dep:nuwax-codex-acp",
+    "dep:codex-arg0",
+    "dep:codex-utils-cli",
+    "dep:gix-actor",
+    "dep:icu_calendar",
 ]
 
 # Telemetry: OpenTelemetry exporters for tracing/metrics. Independent of
@@ -57,7 +68,7 @@ memchr = "2.5"
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 
 # CLI (binary feature)
-clap = { version = "4", features = ["derive"], optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
 
 # Logging (binary feature)
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -81,6 +92,15 @@ async-trait = { version = "0.1", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 url = { version = "2.5", optional = true }
 
+# ACP integration (optional)
+nuwax-codex-acp = { path = "/Volumes/soddygo/git-rust-work/nuwax-codex-acp", optional = true }
+codex-arg0 = { git = "https://github.com/openai/codex", tag = "rust-v0.129.0", optional = true }
+codex-utils-cli = { git = "https://github.com/openai/codex", tag = "rust-v0.129.0", optional = true }
+codex-utils-rustls-provider = { git = "https://github.com/openai/codex", tag = "rust-v0.129.0", optional = true }
+# Pins required by the Codex dependency graph.
+gix-actor = { version = "=0.40.0", optional = true }
+icu_calendar = { version = "~2.1", optional = true }
+
 [[bin]]
 name = "codex-convert-proxy"
 path = "src/main.rs"
@@ -90,3 +110,7 @@ required-features = ["server"]
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }

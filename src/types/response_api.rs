@@ -279,15 +279,12 @@ impl<'de> Deserialize<'de> for ToolChoice {
             },
             ToolChoiceHelper::Object(value) => {
                 // Accept both {name:"..."} and OpenAI-style {type:"function",function:{name:"..."}}
-                let name = value
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| {
-                        value
-                            .get("function")
-                            .and_then(|v| v.get("name"))
-                            .and_then(|v| v.as_str())
-                    });
+                let name = value.get("name").and_then(|v| v.as_str()).or_else(|| {
+                    value
+                        .get("function")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str())
+                });
                 if let Some(name) = name {
                     Ok(ToolChoice::Function(FunctionToolChoice {
                         name: name.to_string(),
@@ -309,15 +306,13 @@ impl Serialize for ToolChoice {
             ToolChoice::Auto => serializer.serialize_str("auto"),
             ToolChoice::None => serializer.serialize_str("none"),
             ToolChoice::Required => serializer.serialize_str("required"),
-            ToolChoice::Function(f) => {
-                serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": f.name
-                    }
-                })
-                .serialize(serializer)
-            }
+            ToolChoice::Function(f) => serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": f.name
+                }
+            })
+            .serialize(serializer),
         }
     }
 }
@@ -430,8 +425,12 @@ pub enum ResponseContentPart {
         #[serde(default)]
         logprobs: Vec<serde_json::Value>,
     },
-    Refusal { refusal: String },
-    InputSummary { text: String },
+    Refusal {
+        refusal: String,
+    },
+    InputSummary {
+        text: String,
+    },
 }
 
 /// Output text annotation.
@@ -555,16 +554,12 @@ impl ResponseObject {
             store: ctx.and_then(|c| c.store),
             temperature: ctx.and_then(|c| c.temperature),
             text: ctx.and_then(|c| c.text.clone()).or(default_text),
-            tool_choice: ctx
-                .map(|c| c.tool_choice.clone())
-                .unwrap_or_default(),
+            tool_choice: ctx.map(|c| c.tool_choice.clone()).unwrap_or_default(),
             tools: ctx.map(|c| c.tools.clone()).unwrap_or_default(),
             top_p: ctx.and_then(|c| c.top_p),
             truncation: ctx.and_then(|c| c.truncation.clone()),
             user: ctx.and_then(|c| c.user.clone()),
-            metadata: ctx
-                .and_then(|c| c.metadata.clone())
-                .unwrap_or_default(),
+            metadata: ctx.and_then(|c| c.metadata.clone()).unwrap_or_default(),
             service_tier: None,
             top_logprobs: None,
             usage: None,
@@ -583,6 +578,36 @@ pub struct Usage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens_details: Option<OutputTokensDetails>,
     pub total_tokens: Option<i64>,
+}
+
+impl Usage {
+    pub fn from_optional_counts(
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        cached_tokens: Option<i64>,
+        reasoning_tokens: Option<i64>,
+    ) -> Option<Self> {
+        if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
+            return None;
+        }
+
+        let input_tokens = input_tokens.unwrap_or(0);
+        let output_tokens = output_tokens.unwrap_or(0);
+        let total_tokens = total_tokens.unwrap_or(input_tokens + output_tokens);
+
+        Some(Self {
+            input_tokens: Some(input_tokens),
+            input_tokens_details: Some(InputTokensDetails {
+                cached_tokens: cached_tokens.unwrap_or(0),
+            }),
+            output_tokens: Some(output_tokens),
+            output_tokens_details: Some(OutputTokensDetails {
+                reasoning_tokens: reasoning_tokens.unwrap_or(0),
+            }),
+            total_tokens: Some(total_tokens),
+        })
+    }
 }
 
 /// Input token details.

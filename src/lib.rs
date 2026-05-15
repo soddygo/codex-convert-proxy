@@ -61,8 +61,8 @@ pub use types::*;
 // Re-export convert functions (requires the `lib` feature)
 #[cfg(feature = "lib")]
 pub use convert::{
-    chat_chunk_to_response_events, chat_to_response, chat_to_response_with_context,
-    event_to_sse, response_to_chat,
+    chat_chunk_to_response_events, chat_to_response, chat_to_response_with_context, event_to_sse,
+    response_to_chat,
 };
 
 // Re-export streaming types for library consumers
@@ -79,7 +79,10 @@ pub use stats::{RequestRecord, RequestStats, StatsSummary, TokenUsage};
 pub mod providers;
 
 #[cfg(feature = "lib")]
-pub use providers::{create_provider, DefaultProvider, DeepSeekProvider, GLMProvider, KimiProvider, MiniMaxProvider, Provider};
+pub use providers::{
+    DeepSeekProvider, DefaultProvider, GLMProvider, KimiProvider, MiniMaxProvider, Provider,
+    create_provider,
+};
 
 // Config module (`server` feature - parsing backend definitions)
 #[cfg(feature = "server")]
@@ -102,8 +105,11 @@ pub use proxy::CodexProxy;
 #[cfg(feature = "server")]
 pub mod cli;
 
+#[cfg(feature = "acp")]
+pub mod acp;
+
 #[cfg(feature = "server")]
-pub use cli::{Cli, Commands, StartArgs};
+pub use cli::{Cli, Commands, ServerArgs};
 
 // Logging (server/binary feature - requires tracing-subscriber and tracing-appender)
 #[cfg(feature = "server")]

@@ -31,6 +31,16 @@ struct LogConfig {
 /// - stdout: terminal output (timeline level)
 /// - file: detailed log file (all levels)
 pub fn init_logging(log_dir: &Path, log_body: bool, log_headers: bool) -> anyhow::Result<()> {
+    init_logging_with_stdout(log_dir, log_body, log_headers, true)
+}
+
+/// Initialize file logging and optionally mirror timeline logs to stdout.
+pub fn init_logging_with_stdout(
+    log_dir: &Path,
+    log_body: bool,
+    log_headers: bool,
+    enable_stdout: bool,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(log_dir)?;
 
     // Create file appender
@@ -45,20 +55,26 @@ pub fn init_logging(log_dir: &Path, log_body: bool, log_headers: bool) -> anyhow
         .with_span_events(FmtSpan::CLOSE)
         .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")));
 
-    // Terminal output
-    let stdout_layer = fmt::layer()
-        .with_writer(std::io::stdout)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_ansi(true)
-        .with_filter(create_timeline_filter());
+    if enable_stdout {
+        // Terminal output
+        let stdout_layer = fmt::layer()
+            .with_writer(std::io::stdout)
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_ansi(true)
+            .with_filter(create_timeline_filter());
 
-    // Initialize subscriber
-    Registry::default()
-        .with(file_layer)
-        .with(stdout_layer)
-        .try_init()
-        .map_err(|e| anyhow::anyhow!("Failed to initialize logging: {}", e))?;
+        Registry::default()
+            .with(file_layer)
+            .with(stdout_layer)
+            .try_init()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize logging: {}", e))?;
+    } else {
+        Registry::default()
+            .with(file_layer)
+            .try_init()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize logging: {}", e))?;
+    }
 
     // Store global config
     LOG_CONFIG.get_or_init(|| LogConfig {

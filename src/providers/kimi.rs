@@ -32,6 +32,9 @@ impl Provider for KimiProvider {
             token_limit_field: TokenLimitField::MaxCompletionTokens,
             supports_developer_role: false,
             flatten_request_content: false,
+            supports_tool_strict: true,
+            supports_stream_options: true,
+            supports_parallel_tool_calls: true,
         }
     }
 }

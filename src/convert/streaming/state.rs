@@ -19,8 +19,8 @@
 //! parameter to [`StreamState::build_response_object`] so that non-streaming
 //! flows don't have to construct a `StreamState` just to carry context.
 
-use crate::types::chat_api::ChatStreamChunk;
 use crate::convert::context::ResponseRequestContext;
+use crate::types::chat_api::ChatStreamChunk;
 
 use super::super::util::{extract_queries_from_arguments, map_tool_name_to_output_type};
 
@@ -143,7 +143,6 @@ pub struct StreamState {
     pub usage: UsageMetrics,
     pub tool_calls: ToolCallTracker,
     pub emit: EmitState,
-
 }
 
 #[derive(Debug, Clone)]
@@ -194,8 +193,7 @@ impl StreamState {
         request_context: Option<&ResponseRequestContext>,
     ) -> Box<crate::types::response_api::ResponseObject> {
         use crate::types::response_api::{
-            InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseContentPart,
-            ResponseObject, ResponseOutputItem, Usage,
+            OutputItemType, ResponseContentPart, ResponseObject, ResponseOutputItem, Usage,
         };
         use chrono::Utc;
 
@@ -301,24 +299,13 @@ impl StreamState {
             .as_ref()
             .map(|reason| serde_json::json!({ "reason": reason }));
         response.output = output;
-        response.usage = if self.usage.input_tokens.is_some()
-            || self.usage.output_tokens.is_some()
-            || self.usage.total_tokens.is_some()
-        {
-            Some(Usage {
-                input_tokens: self.usage.input_tokens,
-                input_tokens_details: Some(InputTokensDetails {
-                    cached_tokens: self.usage.cached_tokens.unwrap_or(0),
-                }),
-                output_tokens: self.usage.output_tokens,
-                output_tokens_details: Some(OutputTokensDetails {
-                    reasoning_tokens: self.usage.reasoning_tokens.unwrap_or(0),
-                }),
-                total_tokens: self.usage.total_tokens,
-            })
-        } else {
-            None
-        };
+        response.usage = Usage::from_optional_counts(
+            self.usage.input_tokens,
+            self.usage.output_tokens,
+            self.usage.total_tokens,
+            self.usage.cached_tokens,
+            self.usage.reasoning_tokens,
+        );
         Box::new(response)
     }
 }

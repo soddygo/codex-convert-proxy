@@ -4,24 +4,26 @@
 //!
 //! This binary requires the `binary` feature to be enabled.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use codex_convert_proxy::cli::{Cli, Commands, StartArgs};
+use codex_convert_proxy::cli::{Cli, Commands, ServerArgs};
 use codex_convert_proxy::config::{BackendRouter, ProxyConfig};
 use codex_convert_proxy::logger;
-use codex_convert_proxy::proxy::CodexProxy;
-use codex_convert_proxy::providers::create_provider;
-use codex_convert_proxy::providers::Provider;
 use codex_convert_proxy::server;
 
 fn main() {
     let cli = Cli::parse_args();
 
     match cli.command {
-        Commands::Start(args) => {
-            if let Err(e) = run_proxy(args) {
+        Commands::Server(args) => {
+            if let Err(e) = run_server(args) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        #[cfg(feature = "acp")]
+        Commands::Acp(args) => {
+            if let Err(e) = codex_convert_proxy::acp::run_acp(args) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -36,7 +38,9 @@ fn main() {
 }
 
 /// Run the proxy server.
-fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
+fn run_server(args: ServerArgs) -> anyhow::Result<()> {
+    codex_utils_rustls_provider::ensure_rustls_crypto_provider();
+
     // Create proxy config from args
     let config = args.to_proxy_config()?;
 
@@ -44,51 +48,21 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
     let log_dir = std::path::PathBuf::from(&config.log_dir);
     logger::init_logging(&log_dir, config.log_body, true)?;
 
-    // Create backend router
-    if config.backends.is_empty() {
-        anyhow::bail!("No backend configured");
-    }
-
+    let listen = config.listen.clone();
     let router = Arc::new(BackendRouter::new(config.backends.clone())?);
-    let listen = &config.listen;
-
-    // Create providers for each backend
-    let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
-    for backend in &config.backends {
-        let name = backend.name.clone();
-        if let std::collections::hash_map::Entry::Vacant(e) = providers.entry(name.clone()) {
-            match create_provider(&name) {
-                Ok(p) => {
-                    e.insert(p);
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to create provider for {}: {}", name, e);
-                }
-            }
-        }
-    }
 
     eprintln!("Starting Codex Convert Proxy");
     eprintln!("  Listen: {}", listen);
     eprintln!("  Backends:");
     for name in router.backend_names() {
-        let has_provider = providers.contains_key(name);
-        eprintln!("    - {} {}", name, if has_provider { "(provider OK)" } else { "(NO PROVIDER)" });
+        eprintln!("    - {name}");
     }
     eprintln!();
 
-    // Create CodexProxy
-    let log_dir = std::path::PathBuf::from(&config.log_dir);
-    let proxy = CodexProxy::with_conversation_ttl(
-        router,
-        providers,
-        config.log_body,
-        log_dir,
-        Duration::from_secs(config.conversation_ttl_seconds),
-    );
+    let proxy = server::build_proxy(config)?;
 
     // Start the pingora server (this blocks)
-    server::start_proxy_server(proxy, listen);
+    server::start_proxy_server(proxy, &listen);
 
     Ok(())
 }

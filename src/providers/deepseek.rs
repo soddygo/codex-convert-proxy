@@ -1,8 +1,6 @@
 //! DeepSeek provider implementation.
 
-use crate::providers::{
-    Provider, ProviderCapabilities, TokenLimitField, ToolChoiceSupport,
-};
+use crate::providers::{Provider, ProviderCapabilities, TokenLimitField, ToolChoiceSupport};
 
 /// DeepSeek provider.
 ///
@@ -34,16 +32,17 @@ impl Provider for DeepSeekProvider {
             token_limit_field: TokenLimitField::MaxTokens,
             supports_developer_role: false,
             flatten_request_content: true,
+            supports_tool_strict: true,
+            supports_stream_options: true,
+            supports_parallel_tool_calls: true,
         }
     }
 
     fn normalize_reasoning_effort(&self, effort: Option<String>) -> Option<String> {
-        effort.map(|effort| {
-            match effort.as_str() {
-                "xhigh" | "max" => "max".to_string(),
-                "low" | "medium" | "high" => "high".to_string(),
-                _ => "high".to_string(),
-            }
+        effort.map(|effort| match effort.as_str() {
+            "xhigh" | "max" => "max".to_string(),
+            "low" | "medium" | "high" => "high".to_string(),
+            _ => "high".to_string(),
         })
     }
 }

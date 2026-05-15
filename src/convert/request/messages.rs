@@ -57,7 +57,6 @@ pub fn convert_input_to_messages(
             });
         }
         InputItemOrString::Array(items) => {
-
             for mut item in items {
                 match item.item_type {
                     crate::types::response_api::InputItemType::Message => {
@@ -94,7 +93,8 @@ pub fn convert_input_to_messages(
                             if let Some(tool_calls) = pending_tool_calls.take() {
                                 for tc in &tool_calls {
                                     emitted_tool_call_ids.insert(tc.id.clone());
-                                    emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
+                                    emitted_tool_call_names
+                                        .insert(tc.id.clone(), tc.function.name.clone());
                                 }
                                 messages.push(ChatMessage {
                                     role,
@@ -115,7 +115,8 @@ pub fn convert_input_to_messages(
                             // Flush pending tool calls before non-assistant message items
                             for tc in &tool_calls {
                                 emitted_tool_call_ids.insert(tc.id.clone());
-                                emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
+                                emitted_tool_call_names
+                                    .insert(tc.id.clone(), tc.function.name.clone());
                             }
                             messages.push(ChatMessage {
                                 role: MessageRole::Assistant,
@@ -147,7 +148,10 @@ pub fn convert_input_to_messages(
                             .name
                             .ok_or_else(|| ConversionError::MissingField("name".to_string()))?;
                         // Use call_id to match FunctionCallOutput's call_id reference
-                        let id = item.call_id.or(item.id).unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
+                        let id = item
+                            .call_id
+                            .or(item.id)
+                            .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
 
                         let tool_call = ToolCall {
                             id,
@@ -155,7 +159,9 @@ pub fn convert_input_to_messages(
                             function: FunctionCall { name, arguments },
                         };
 
-                        pending_tool_calls.get_or_insert_with(Vec::new).push(tool_call);
+                        pending_tool_calls
+                            .get_or_insert_with(Vec::new)
+                            .push(tool_call);
                     }
                     crate::types::response_api::InputItemType::FunctionCallOutput => {
                         let call_id = item
@@ -172,7 +178,8 @@ pub fn convert_input_to_messages(
                         if let Some(tool_calls) = pending_tool_calls.take() {
                             for tc in &tool_calls {
                                 emitted_tool_call_ids.insert(tc.id.clone());
-                                emitted_tool_call_names.insert(tc.id.clone(), tc.function.name.clone());
+                                emitted_tool_call_names
+                                    .insert(tc.id.clone(), tc.function.name.clone());
                             }
                             messages.push(ChatMessage {
                                 role: MessageRole::Assistant,
@@ -189,7 +196,9 @@ pub fn convert_input_to_messages(
                         // Some providers require a preceding assistant.tool_calls message
                         // before each tool result. If missing in the current input window,
                         // synthesize a minimal one to preserve protocol validity.
-                        if enforce_tool_result_adjacency && !emitted_tool_call_ids.contains(&call_id) {
+                        if enforce_tool_result_adjacency
+                            && !emitted_tool_call_ids.contains(&call_id)
+                        {
                             tracing::warn!(
                                 "[REQUEST_CONVERT] function_call_output without preceding function_call, synthesizing assistant tool_call (call_id={}, name={})",
                                 call_id,
@@ -277,7 +286,7 @@ pub fn convert_input_to_messages(
                         continue;
                     }
                     crate::types::response_api::InputItemType::Reasoning => {
-                        tracing::warn!(
+                        tracing::debug!(
                             "[REQUEST_CONVERT] skipping reasoning input item (id={:?}), \
                             reasoning items are for context but cannot be converted to Chat API format",
                             item.id
@@ -524,8 +533,12 @@ mod tests {
         // OpenAI `ChatCompletionRequestMessageContentPartImage.image_url` is a
         // required object `{url, detail?}`, not a string.
         let content = ResponseContent::Array(vec![
-            ContentPart::InputText { text: "see this:".into() },
-            ContentPart::InputImage { image_url: "https://example.com/x.png".into() },
+            ContentPart::InputText {
+                text: "see this:".into(),
+            },
+            ContentPart::InputImage {
+                image_url: "https://example.com/x.png".into(),
+            },
         ]);
         let chat_content = extract_content(&Some(content)).unwrap();
         let json = serde_json::to_value(&chat_content).unwrap();
@@ -534,7 +547,10 @@ mod tests {
             .iter()
             .find(|b| b["type"] == "image_url")
             .expect("image_url block present");
-        assert!(image_block["image_url"].is_object(), "image_url must be object: {image_block}");
+        assert!(
+            image_block["image_url"].is_object(),
+            "image_url must be object: {image_block}"
+        );
         assert_eq!(image_block["image_url"]["url"], "https://example.com/x.png");
     }
 
@@ -552,8 +568,8 @@ mod tests {
             namespace: None,
             tools: None,
         }]);
-        let err = convert_input_to_messages(input, None, false)
-            .expect_err("unknown role must fail");
+        let err =
+            convert_input_to_messages(input, None, false).expect_err("unknown role must fail");
         assert!(matches!(err, ConversionError::InvalidFormat(_)));
     }
 }

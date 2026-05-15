@@ -92,10 +92,7 @@ impl ToolSearchContext {
     /// Record that a `tool_search_call` was initiated with the given id.
     pub fn register_search_call(&mut self, call_id: &str) {
         self.pending_calls.insert(call_id.to_string());
-        tracing::debug!(
-            "[TOOL_SEARCH] registered tool_search_call: id={}",
-            call_id
-        );
+        tracing::debug!("[TOOL_SEARCH] registered tool_search_call: id={}", call_id);
     }
 
     /// Check if a call_id corresponds to a registered tool_search_call.
@@ -187,17 +184,12 @@ impl ToolSearchContext {
                 }
                 std::mem::take(&mut self.searched_tools)
             }
-            ToolPriority::Merge => {
-                merge_tools_map(&self.predefined_tools, &self.searched_tools)
-            }
+            ToolPriority::Merge => merge_tools_map(&self.predefined_tools, &self.searched_tools),
         };
 
         self.finalized = true;
         self.resolved_tools = result.clone();
-        tracing::debug!(
-            "[TOOL_SEARCH] resolved tools: count={}",
-            result.len()
-        );
+        tracing::debug!("[TOOL_SEARCH] resolved tools: count={}", result.len());
 
         result
     }
@@ -314,8 +306,16 @@ mod tests {
 
         let resolved = ctx.finalize().clone();
         assert_eq!(resolved.len(), 2);
-        assert!(resolved.iter().any(|t| t.name.as_ref().unwrap() == "tool_a"));
-        assert!(resolved.iter().any(|t| t.name.as_ref().unwrap() == "tool_b"));
+        assert!(
+            resolved
+                .iter()
+                .any(|t| t.name.as_ref().unwrap() == "tool_a")
+        );
+        assert!(
+            resolved
+                .iter()
+                .any(|t| t.name.as_ref().unwrap() == "tool_b")
+        );
     }
 
     #[test]
@@ -326,8 +326,16 @@ mod tests {
 
         let resolved = ctx.finalize().clone();
         assert_eq!(resolved.len(), 2);
-        assert!(resolved.iter().any(|t| t.name.as_ref().unwrap() == "tool_c"));
-        assert!(resolved.iter().any(|t| t.name.as_ref().unwrap() == "tool_d"));
+        assert!(
+            resolved
+                .iter()
+                .any(|t| t.name.as_ref().unwrap() == "tool_c")
+        );
+        assert!(
+            resolved
+                .iter()
+                .any(|t| t.name.as_ref().unwrap() == "tool_d")
+        );
     }
 
     #[test]
@@ -350,7 +358,9 @@ mod tests {
         assert_eq!(resolved.len(), 3);
 
         // Verify tool_b exists (we can't easily tell which version it is from)
-        let _tool_b = resolved.iter().find(|t| t.name.as_ref().unwrap() == "tool_b");
+        let _tool_b = resolved
+            .iter()
+            .find(|t| t.name.as_ref().unwrap() == "tool_b");
         assert!(_tool_b.is_some());
     }
 
@@ -365,8 +375,14 @@ mod tests {
 
     #[test]
     fn test_priority_from_str() {
-        assert_eq!("prefer_defined".parse::<ToolPriority>(), Ok(ToolPriority::PreferDefined));
-        assert_eq!("prefer-searched".parse::<ToolPriority>(), Ok(ToolPriority::PreferSearched));
+        assert_eq!(
+            "prefer_defined".parse::<ToolPriority>(),
+            Ok(ToolPriority::PreferDefined)
+        );
+        assert_eq!(
+            "prefer-searched".parse::<ToolPriority>(),
+            Ok(ToolPriority::PreferSearched)
+        );
         assert_eq!("merge".parse::<ToolPriority>(), Ok(ToolPriority::Merge));
         assert_eq!("unknown".parse::<ToolPriority>(), Ok(ToolPriority::Merge)); // default
     }
