@@ -5,8 +5,10 @@ pub mod kimi;
 pub mod deepseek;
 pub mod minimax;
 pub mod default;
+pub mod capabilities;
 pub mod trait_;
 
+pub use capabilities::*;
 pub use trait_::*;
 pub use glm::GLMProvider;
 pub use kimi::KimiProvider;

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codex_convert_proxy::cli::{Cli, Commands, StartArgs};
 use codex_convert_proxy::config::{BackendRouter, ProxyConfig};
@@ -78,7 +79,13 @@ fn run_proxy(args: StartArgs) -> anyhow::Result<()> {
 
     // Create CodexProxy
     let log_dir = std::path::PathBuf::from(&config.log_dir);
-    let proxy = CodexProxy::new(router, providers, config.log_body, log_dir);
+    let proxy = CodexProxy::with_conversation_ttl(
+        router,
+        providers,
+        config.log_body,
+        log_dir,
+        Duration::from_secs(config.conversation_ttl_seconds),
+    );
 
     // Start the pingora server (this blocks)
     server::start_proxy_server(proxy, listen);

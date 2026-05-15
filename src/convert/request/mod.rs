@@ -10,7 +10,8 @@ pub use tools::{convert_tools, convert_tool_choice};
 
 use crate::constants::MIN_MAX_TOKENS;
 use crate::error::ConversionError;
-use crate::providers::Provider;
+use crate::convert::ResponseRequestContext;
+use crate::providers::{Provider, TokenLimitField};
 use crate::types::chat_api::{ChatRequest, StreamOptions};
 use crate::types::response_api::{ResponseRequest, ResponseTextConfig};
 use tracing::{debug, warn};
@@ -54,7 +55,9 @@ pub fn response_to_chat(
     model_override: Option<&str>,
     _tool_priority: ToolPriority,
 ) -> Result<ChatRequest, ConversionError> {
-    let enforce_tool_result_adjacency = provider.name() == "minimax";
+    let request_context = ResponseRequestContext::from(&response_req);
+    let capabilities = provider.capabilities();
+    let enforce_tool_result_adjacency = capabilities.supports_tools;
     let (messages, extracted_tools) = convert_input_to_messages(
         response_req.input,
         response_req.instructions,
@@ -86,6 +89,12 @@ pub fn response_to_chat(
     // Tools: pass through even when empty `vec![]` so we don't violate provider expectations on
     //   schema; serializer skips when None. We filter empty to None to mirror Chat API idiom.
     // tool_choice: pass through "none" honoring user intent (spec allows "none" mode).
+    let token_limit = response_req.max_output_tokens.or(response_req.max_tokens);
+    let (max_tokens, max_completion_tokens) = match capabilities.token_limit_field {
+        TokenLimitField::MaxTokens => (token_limit, None),
+        TokenLimitField::MaxCompletionTokens => (None, token_limit),
+    };
+
     let mut chat_req = ChatRequest {
         model,
         messages,
@@ -93,7 +102,8 @@ pub fn response_to_chat(
         tool_choice: Some(tool_choice),
         stream: Some(response_req.stream),
         temperature: response_req.temperature,
-        max_tokens: response_req.max_output_tokens.or(response_req.max_tokens),
+        max_tokens,
+        max_completion_tokens,
         top_p: response_req.top_p,
         user: response_req.user,
         stream_options: if response_req.stream {
@@ -109,7 +119,8 @@ pub fn response_to_chat(
         n: None,
         stop: None,
         response_format,
-        reasoning_effort: response_req.reasoning.as_ref().and_then(|r| r.effort.clone()),
+        reasoning_effort: provider
+            .normalize_reasoning_effort(response_req.reasoning.as_ref().and_then(|r| r.effort.clone())),
         parallel_tool_calls: response_req.parallel_tool_calls,
         seed: None,
         service_tier: None,
@@ -117,6 +128,7 @@ pub fn response_to_chat(
         modalities: None,
         prediction: None,
         audio: None,
+        extra: Default::default(),
     };
 
     // Apply min_tokens floor validation (some providers reject max_tokens < MIN_MAX_TOKENS).
@@ -130,7 +142,18 @@ pub fn response_to_chat(
             chat_req.max_tokens = Some(MIN_MAX_TOKENS);
         }
 
-    provider.transform_request(&mut chat_req);
+    if let Some(max_completion_tokens) = chat_req.max_completion_tokens
+        && max_completion_tokens < MIN_MAX_TOKENS {
+            warn!(
+                "[REQUEST_CONVERT] max_completion_tokens {} below floor {}; raising to floor",
+                max_completion_tokens, MIN_MAX_TOKENS
+            );
+            chat_req.max_completion_tokens = Some(MIN_MAX_TOKENS);
+        }
+
+    capabilities.sanitize_request(&mut chat_req);
+    let extensions = provider.provider_extensions(&request_context)?;
+    chat_req.apply_provider_extensions(extensions);
 
     debug!(
         "[REQUEST_CONVERT] converted request: model={}, messages={}, tools={}",
@@ -364,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_non_minimax_keeps_assistant_and_tool_call_split() {
+    fn test_tool_providers_merge_assistant_with_pending_tool_calls() {
         let request = make_request(InputItemOrString::Array(vec![
             InputItem {
                 id: Some("fc_1".to_string()),
@@ -406,11 +429,11 @@ mod tests {
 
         let provider = GLMProvider;
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
-        assert_eq!(chat_req.messages.len(), 3);
+        assert_eq!(chat_req.messages.len(), 2);
         assert_eq!(chat_req.messages[0].role, MessageRole::Assistant);
         assert!(chat_req.messages[0].tool_calls.is_some());
-        assert_eq!(chat_req.messages[1].role, MessageRole::Assistant);
-        assert_eq!(chat_req.messages[2].role, MessageRole::Tool);
+        assert_eq!(chat_req.messages[0].content.as_text(), "我先看下目录");
+        assert_eq!(chat_req.messages[1].role, MessageRole::Tool);
     }
 
     #[test]
@@ -421,6 +444,81 @@ mod tests {
         let provider = GLMProvider;
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.max_tokens, Some(16));
+        assert_eq!(chat_req.max_completion_tokens, None);
+    }
+
+    #[test]
+    fn test_kimi_and_minimax_use_max_completion_tokens() {
+        for provider in [
+            Box::new(crate::providers::kimi::KimiProvider) as Box<dyn Provider>,
+            Box::new(crate::providers::minimax::MiniMaxProvider) as Box<dyn Provider>,
+        ] {
+            let mut request = make_request(InputItemOrString::String("Hello".to_string()));
+            request.max_output_tokens = Some(8);
+            let chat_req =
+                response_to_chat(request, provider.as_ref(), None, ToolPriority::Merge).unwrap();
+            assert_eq!(chat_req.max_tokens, None);
+            assert_eq!(chat_req.max_completion_tokens, Some(16));
+        }
+    }
+
+    #[test]
+    fn test_domestic_providers_convert_developer_role_to_system() {
+        for provider in [
+            Box::new(crate::providers::glm::GLMProvider) as Box<dyn Provider>,
+            Box::new(crate::providers::kimi::KimiProvider) as Box<dyn Provider>,
+            Box::new(crate::providers::deepseek::DeepSeekProvider) as Box<dyn Provider>,
+            Box::new(crate::providers::minimax::MiniMaxProvider) as Box<dyn Provider>,
+        ] {
+            let request = make_request(InputItemOrString::Array(vec![InputItem {
+                id: None,
+                item_type: InputItemType::Message,
+                role: Some("developer".to_string()),
+                content: Some(ResponseContent::String("rules".to_string())),
+                name: None,
+                arguments: None,
+                call_id: None,
+                output: None,
+                namespace: None,
+                tools: None,
+            }]));
+            let chat_req =
+                response_to_chat(request, provider.as_ref(), None, ToolPriority::Merge).unwrap();
+            assert_eq!(chat_req.messages[0].role, MessageRole::System);
+        }
+    }
+
+    #[test]
+    fn test_glm_keeps_tools_and_downgrades_tool_choice_to_auto() {
+        let mut request = make_request(InputItemOrString::String("Hello".to_string()));
+        request.tools = vec![Tool {
+            tool_type: ToolType::Function,
+            name: Some("lookup".to_string()),
+            description: None,
+            parameters: None,
+            strict: None,
+            extra: HashMap::new(),
+        }];
+        request.tool_choice = ResponseToolChoice::Required;
+
+        let provider = GLMProvider;
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
+        assert_eq!(chat_req.tools.as_ref().map(|t| t.len()), Some(1));
+        let choice = serde_json::to_value(chat_req.tool_choice.unwrap()).unwrap();
+        assert_eq!(choice, serde_json::json!("auto"));
+    }
+
+    #[test]
+    fn test_deepseek_reasoning_effort_maps_to_supported_values() {
+        let mut request = make_request(InputItemOrString::String("Hello".to_string()));
+        request.reasoning = Some(ResponseReasoning {
+            effort: Some("xhigh".to_string()),
+            summary: None,
+        });
+
+        let provider = crate::providers::deepseek::DeepSeekProvider;
+        let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
+        assert_eq!(chat_req.reasoning_effort.as_deref(), Some("max"));
     }
 
     #[test]

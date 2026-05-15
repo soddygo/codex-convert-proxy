@@ -11,7 +11,7 @@
 //! namespace.
 
 use crate::providers::trait_::Provider;
-use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use crate::types::chat_api::{ChatResponse, ChatStreamChunk};
 
 /// Default provider that makes minimal assumptions.
 ///
@@ -70,9 +70,6 @@ impl Provider for DefaultProvider {
         // Standard OpenAI-compatible path (without /v1 prefix)
         "/chat/completions".to_string()
     }
-
-    // No transformations - pass through as-is
-    fn transform_request(&self, _request: &mut ChatRequest) {}
 
     fn transform_response(&self, _response: &mut ChatResponse) {}
 

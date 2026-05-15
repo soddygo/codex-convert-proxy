@@ -1,6 +1,6 @@
 //! Kimi (Moonshot AI) provider implementation.
 
-use crate::providers::trait_::Provider;
+use crate::providers::{Provider, ProviderCapabilities, TokenLimitField, ToolChoiceSupport};
 
 /// Kimi (Moonshot AI) provider.
 ///
@@ -23,5 +23,15 @@ impl KimiProvider {
 impl Provider for KimiProvider {
     fn name(&self) -> &'static str {
         "kimi"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_tools: true,
+            tool_choice: ToolChoiceSupport::AutoOnly,
+            token_limit_field: TokenLimitField::MaxCompletionTokens,
+            supports_developer_role: false,
+            flatten_request_content: false,
+        }
     }
 }

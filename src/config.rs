@@ -98,7 +98,7 @@ pub struct BackendRouter {
 }
 
 impl BackendRouter {
-    fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    pub fn path_matches_prefix(path: &str, prefix: &str) -> bool {
         let normalized = if prefix != "/" {
             prefix.trim_end_matches('/')
         } else {
@@ -112,6 +112,25 @@ impl BackendRouter {
         }
         let with_slash = format!("{}/", normalized);
         path.starts_with(&with_slash)
+    }
+
+    pub fn strip_path_prefix(path: &str, prefix: &str) -> Option<String> {
+        if !Self::path_matches_prefix(path, prefix) {
+            return None;
+        }
+        let normalized = if prefix != "/" {
+            prefix.trim_end_matches('/')
+        } else {
+            prefix
+        };
+        let stripped = path.strip_prefix(normalized).unwrap_or(path);
+        Some(if stripped.is_empty() {
+            "/".to_string()
+        } else if stripped.starts_with('/') {
+            stripped.to_string()
+        } else {
+            format!("/{stripped}")
+        })
     }
 
     /// Create a new backend router from configs.
@@ -160,7 +179,7 @@ impl BackendRouter {
 
         // Remove path prefix if present
         let new_path = if let Some(ref prefix) = config.match_rules.path_prefix {
-            path.strip_prefix(prefix).unwrap_or(path).to_string()
+            Self::strip_path_prefix(path, prefix).unwrap_or_else(|| path.to_string())
         } else {
             path.to_string()
         };
@@ -222,6 +241,9 @@ pub struct ProxyConfig {
     /// Whether to log request/response bodies.
     #[serde(default = "default_log_body")]
     pub log_body: bool,
+    /// In-memory previous_response_id TTL in seconds.
+    #[serde(default = "default_conversation_ttl_seconds")]
+    pub conversation_ttl_seconds: u64,
     /// Backends configuration.
     pub backends: Vec<BackendConfig>,
 }
@@ -238,12 +260,17 @@ fn default_log_body() -> bool {
     false
 }
 
+fn default_conversation_ttl_seconds() -> u64 {
+    2 * 60 * 60
+}
+
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
             log_dir: default_log_dir(),
             log_body: default_log_body(),
+            conversation_ttl_seconds: default_conversation_ttl_seconds(),
             backends: Vec::new(),
         }
     }
@@ -346,5 +373,23 @@ mod tests {
         let (info, rewritten_path) = router.select_and_rewrite("/kimi/responses", &[]).unwrap();
         assert_eq!(info.name, "kimi");
         assert_eq!(rewritten_path, "/v1/responses");
+    }
+
+    #[test]
+    fn test_path_prefix_boundaries_and_strip() {
+        assert!(BackendRouter::path_matches_prefix("/kimi", "/kimi"));
+        assert!(BackendRouter::path_matches_prefix("/kimi/", "/kimi"));
+        assert!(BackendRouter::path_matches_prefix("/kimi/v1/responses", "/kimi/"));
+        assert!(!BackendRouter::path_matches_prefix("/kimi2/v1/responses", "/kimi"));
+
+        assert_eq!(
+            BackendRouter::strip_path_prefix("/kimi", "/kimi").as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            BackendRouter::strip_path_prefix("/kimi/v1/responses", "/kimi/").as_deref(),
+            Some("/v1/responses")
+        );
+        assert!(BackendRouter::strip_path_prefix("/kimi2/v1/responses", "/kimi").is_none());
     }
 }

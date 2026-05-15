@@ -1,13 +1,17 @@
 //! MiniMax provider implementation.
 
-use crate::providers::trait_::Provider;
-use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk, Content, MessageRole};
+use crate::convert::ResponseRequestContext;
+use crate::error::ConversionError;
+use crate::providers::{
+    Provider, ProviderCapabilities, ProviderExtensions, TokenLimitField, ToolChoiceSupport,
+};
+use crate::types::chat_api::{ChatResponse, ChatStreamChunk, Content};
 
 /// MiniMax provider.
 ///
 /// MiniMax specific handling:
-/// - Content must be string, not array
-/// - Does not support 'developer' role, convert to 'user'
+/// - OpenAI-compatible endpoint supports tools
+/// - Does not support 'developer' role, convert to 'system'
 pub struct MiniMaxProvider;
 
 impl Default for MiniMaxProvider {
@@ -33,18 +37,25 @@ impl Provider for MiniMaxProvider {
         "/chat/completions".to_string()
     }
 
-    fn transform_request(&self, request: &mut ChatRequest) {
-        // MiniMax requires content to be a string, not an array
-        for message in &mut request.messages {
-            if matches!(message.content, Content::Array(_)) {
-                let text = message.content.as_text();
-                message.content = Content::String(text);
-            }
-            // MiniMax doesn't support developer role - convert to user
-            if message.role == MessageRole::Developer {
-                message.role = MessageRole::User;
-            }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_tools: true,
+            tool_choice: ToolChoiceSupport::AutoAndNone,
+            token_limit_field: TokenLimitField::MaxCompletionTokens,
+            supports_developer_role: false,
+            flatten_request_content: false,
         }
+    }
+
+    fn provider_extensions(
+        &self,
+        context: &ResponseRequestContext,
+    ) -> Result<ProviderExtensions, ConversionError> {
+        let mut extensions = ProviderExtensions::new();
+        if context.reasoning.is_some() {
+            extensions.insert("reasoning_split", serde_json::json!(true))?;
+        }
+        Ok(extensions)
     }
 
     fn transform_response(&self, response: &mut ChatResponse) {
@@ -76,14 +87,14 @@ impl Provider for MiniMaxProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::chat_api::{ChatMessage, Content, MessageRole};
+    use crate::types::chat_api::{ChatMessage, ChatRequest, Content, MessageRole};
 
     #[test]
-    fn test_minimax_flattens_content() {
+    fn test_minimax_capabilities_keep_array_content() {
         let mut request = ChatRequest {
             model: "ab-01".to_string(),
             messages: vec![ChatMessage {
-                role: MessageRole::User,
+                role: MessageRole::Developer,
                 content: Content::Array(vec![crate::types::chat_api::ContentBlock {
                     block_type: "text".to_string(),
                     text: Some("Hello".to_string()),
@@ -104,6 +115,7 @@ mod tests {
             stream: Some(false),
             temperature: None,
             max_tokens: None,
+            max_completion_tokens: None,
             top_p: None,
             user: None,
             stream_options: None,
@@ -123,13 +135,15 @@ mod tests {
             modalities: None,
             prediction: None,
             audio: None,
+            extra: Default::default(),
         };
 
         let provider = MiniMaxProvider;
-        provider.transform_request(&mut request);
+        provider.capabilities().sanitize_request(&mut request);
 
         let msg = request.messages.first().unwrap();
-        assert!(matches!(msg.content, Content::String(_)));
+        assert_eq!(msg.role, MessageRole::System);
+        assert!(matches!(msg.content, Content::Array(_)));
         assert_eq!(msg.content.as_text(), "Hello");
     }
 }

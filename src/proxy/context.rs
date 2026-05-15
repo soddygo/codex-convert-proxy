@@ -16,7 +16,7 @@
 //!   upstream completes (for `previous_response_id` expansion).
 //!
 //! The root keeps only fields that don't fit any cluster: `start_time`,
-//! `model`, and the streaming `StreamState`.
+//! `model`, request conversion context, and the streaming `StreamState`.
 
 use std::time::Instant;
 
@@ -95,13 +95,15 @@ pub struct FollowUpContext {
 /// Proxy context attached to each request session.
 #[derive(Debug)]
 pub struct ProxyContext {
+    /// Unique id used for per-request diagnostics and optional body dumps.
+    pub request_id: String,
     /// Request start time for duration tracking.
     pub start_time: Instant,
     /// Model name parsed from request.
     pub model: Option<String>,
-    /// Stream state for SSE conversion (also used as a carrier for
-    /// `ResponseRequestContext` in non-streaming conversions; this dual use is
-    /// scheduled to be decoupled in a follow-up commit).
+    /// Request-level context needed to rebuild Responses API payloads.
+    pub response_request_context: Option<ResponseRequestContext>,
+    /// Stream state for SSE conversion.
     pub stream_state: Option<StreamState>,
 
     pub route: RouteInfo,
@@ -115,8 +117,10 @@ impl ProxyContext {
     /// Create a new proxy context.
     pub fn new() -> Self {
         Self {
+            request_id: uuid::Uuid::new_v4().to_string(),
             start_time: Instant::now(),
             model: None,
+            response_request_context: None,
             stream_state: None,
             route: RouteInfo::default(),
             flags: ConversionFlags::default(),
@@ -142,15 +146,7 @@ impl ProxyContext {
 
         if self.flags.is_conversion_request {
             let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
-            let context = self
-                .stream_state
-                .as_ref()
-                .and_then(|s| s.request_context.clone());
-            self.stream_state = Some(StreamState::new(
-                format!("resp_{}", uuid::Uuid::new_v4()),
-                model,
-                context,
-            ));
+            self.stream_state = Some(StreamState::new(format!("resp_{}", uuid::Uuid::new_v4()), model));
         }
     }
 
@@ -175,17 +171,11 @@ impl ProxyContext {
     /// Set the response request context from a parsed ResponseRequest.
     /// This should be called during request_body_filter processing.
     pub fn set_response_request_context(&mut self, context: ResponseRequestContext) {
-        // If stream_state already exists, update its request_context
-        if let Some(ref mut state) = self.stream_state {
-            state.request_context = Some(context);
-        } else {
-            // Create stream_state with the context
+        self.response_request_context = Some(context);
+        if self.flags.is_conversion_request && self.stream_state.is_none() {
             let model = self.model.clone().unwrap_or_else(|| "unknown".to_string());
-            self.stream_state = Some(StreamState::new(
-                format!("resp_{}", uuid::Uuid::new_v4()),
-                model,
-                Some(context),
-            ));
+            self.stream_state =
+                Some(StreamState::new(format!("resp_{}", uuid::Uuid::new_v4()), model));
         }
     }
 }

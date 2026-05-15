@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::BackendRouter;
 use crate::providers::Provider;
@@ -29,12 +30,28 @@ impl CodexProxy {
         log_body: bool,
         log_dir: std::path::PathBuf,
     ) -> Self {
+        Self::with_conversation_ttl(
+            router,
+            providers,
+            log_body,
+            log_dir,
+            ConversationStore::DEFAULT_TTL,
+        )
+    }
+
+    pub fn with_conversation_ttl(
+        router: Arc<BackendRouter>,
+        providers: HashMap<String, Arc<dyn Provider>>,
+        log_body: bool,
+        log_dir: std::path::PathBuf,
+        conversation_ttl: Duration,
+    ) -> Self {
         Self {
             router,
             providers,
             log_body,
             log_dir,
-            conversation_store: Arc::new(ConversationStore::new()),
+            conversation_store: Arc::new(ConversationStore::with_ttl(conversation_ttl)),
         }
     }
 
@@ -44,12 +61,22 @@ impl CodexProxy {
     }
 
     /// Lookup conversation snapshot by response id.
-    pub fn get_conversation(&self, response_id: &str) -> Option<ConversationSnapshot> {
-        self.conversation_store.get(response_id)
+    pub fn get_conversation(
+        &self,
+        backend_name: &str,
+        response_id: &str,
+    ) -> Option<ConversationSnapshot> {
+        self.conversation_store.get(backend_name, response_id)
     }
 
     /// Persist conversation snapshot for follow-up turns.
-    pub fn store_conversation(&self, response_id: String, snapshot: ConversationSnapshot) {
-        self.conversation_store.insert(response_id, snapshot);
+    pub fn store_conversation(
+        &self,
+        backend_name: &str,
+        response_id: String,
+        snapshot: ConversationSnapshot,
+    ) {
+        self.conversation_store
+            .insert(backend_name, response_id, snapshot);
     }
 }

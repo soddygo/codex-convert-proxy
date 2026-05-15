@@ -504,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_request_context_includes_proxy_tool_map() {
+    fn test_request_context_keeps_proxy_tool_map_private() {
         let req = ResponseRequest {
             model: "gpt-4o".to_string(),
             input: InputItemOrString::String("hi".to_string()),
@@ -534,8 +534,8 @@ mod tests {
             background: None,
         };
         let ctx = ResponseRequestContext::from(&req);
-        let metadata = ctx.metadata.unwrap_or_default();
-        assert!(metadata.contains_key("x_proxy_tool_map"));
+        assert!(ctx.metadata.is_none());
+        assert!(ctx.proxy_tool_map.contains_key("web_search_preview"));
     }
 
     #[test]

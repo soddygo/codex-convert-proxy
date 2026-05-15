@@ -19,8 +19,8 @@
 //! parameter to [`StreamState::build_response_object`] so that non-streaming
 //! flows don't have to construct a `StreamState` just to carry context.
 
-use crate::convert::context::ResponseRequestContext;
 use crate::types::chat_api::ChatStreamChunk;
+use crate::convert::context::ResponseRequestContext;
 
 use super::super::util::{extract_queries_from_arguments, map_tool_name_to_output_type};
 
@@ -144,11 +144,6 @@ pub struct StreamState {
     pub tool_calls: ToolCallTracker,
     pub emit: EmitState,
 
-    /// Backwards-compat carrier for the request context. New code paths should
-    /// pass `Option<&ResponseRequestContext>` directly to
-    /// `build_response_object`; this field will be removed once `ProxyContext`
-    /// stores the context separately.
-    pub request_context: Option<ResponseRequestContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,11 +160,7 @@ pub struct ToolCallState {
 
 impl StreamState {
     /// Create a new stream state.
-    pub fn new(
-        response_id: String,
-        model: String,
-        request_context: Option<ResponseRequestContext>,
-    ) -> Self {
+    pub fn new(response_id: String, model: String) -> Self {
         Self {
             output_id: format!("msg_{}", response_id),
             response_id,
@@ -179,7 +170,6 @@ impl StreamState {
             usage: UsageMetrics::default(),
             tool_calls: ToolCallTracker::default(),
             emit: EmitState::default(),
-            request_context,
         }
     }
 
@@ -197,17 +187,17 @@ impl StreamState {
 
     /// Build the final ResponseObject with all accumulated outputs.
     ///
-    /// The `ctx` parameter supplies request-level fields (instructions, tools,
-    /// sampling params, etc.). It defaults to `self.request_context` for
-    /// backwards compatibility but new callers should pass it explicitly.
-    pub fn build_response_object(&self) -> Box<crate::types::response_api::ResponseObject> {
+    /// The `request_context` parameter supplies request-level fields
+    /// (instructions, tools, sampling params, etc.).
+    pub fn build_response_object(
+        &self,
+        request_context: Option<&ResponseRequestContext>,
+    ) -> Box<crate::types::response_api::ResponseObject> {
         use crate::types::response_api::{
             InputTokensDetails, OutputItemType, OutputTokensDetails, ResponseContentPart,
             ResponseObject, ResponseOutputItem, Usage,
         };
         use chrono::Utc;
-
-        let ctx_opt = self.request_context.as_ref();
 
         let mut output = Vec::new();
 
@@ -268,7 +258,8 @@ impl StreamState {
 
         // Add function call outputs
         for tc in &self.tool_calls.completed {
-            let item_type = map_tool_name_to_output_type(&tc.name, ctx_opt.map(|ctx| &ctx.tools));
+            let item_type =
+                map_tool_name_to_output_type(&tc.name, request_context.map(|ctx| &ctx.tools));
             let (queries, results) = if item_type != OutputItemType::FunctionCall {
                 (
                     extract_queries_from_arguments(&tc.arguments),
@@ -301,7 +292,7 @@ impl StreamState {
             self.model.clone(),
             self.emit.final_status.clone(),
             Utc::now().timestamp(),
-            ctx_opt,
+            request_context,
         );
         response.completed_at = Some(Utc::now().timestamp());
         response.incomplete_details = self

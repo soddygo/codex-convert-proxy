@@ -343,12 +343,17 @@ pub struct ResponseOutputItem {
     pub id: String,
     #[serde(rename = "type")]
     pub item_type: OutputItemType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<ResponseContentPart>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queries: Option<Vec<String>>,

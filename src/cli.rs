@@ -165,6 +165,7 @@ mod tests {
         let config = ResolvedConfig {
             proxy: ProxyConfig {
                 listen: "0.0.0.0:8080".to_string(),
+                conversation_ttl_seconds: 7200,
                 ..Default::default()
             },
             backend: BackendConfig {

@@ -28,10 +28,10 @@ Codex 0.118+ uses the Responses API, but most Chinese LLM providers (GLM, Kimi, 
 
 | Provider | Model | API Path | Notes |
 |----------|-------|----------|-------|
-| GLM (Zhipu AI) | glm-4, glm-5 | `/chat/completions` | Removes tools, flattens content |
-| Kimi (Moonshot) | moonshot-v1-* | `/v1/chat/completions` | OpenAI compatible |
-| DeepSeek | deepseek-chat | `/v1/chat/completions` | OpenAI compatible |
-| MiniMax | ab-01, ab-02 | `/v1/chat/completions` | Flattens content, converts developer role |
+| GLM (Zhipu AI) | glm-4, glm-5 | `/chat/completions` | Keeps function tools, flattens content, `tool_choice` → `auto` |
+| Kimi (Moonshot) | moonshot-v1-* | `/v1/chat/completions` | Keeps tools/content arrays, uses `max_completion_tokens` |
+| DeepSeek | deepseek-chat | `/v1/chat/completions` | Keeps tools/tool_choice, maps reasoning effort |
+| MiniMax | ab-01, ab-02 | `/v1/chat/completions` | Keeps tools/content arrays, uses `max_completion_tokens` |
 
 ## Quick Start
 
@@ -44,6 +44,7 @@ Edit `config.json`:
   "listen": "0.0.0.0:8280",
   "log_dir": "./logs",
   "log_body": false,
+  "conversation_ttl_seconds": 7200,
   "backends": [
     {
       "name": "glm",
@@ -120,6 +121,13 @@ codex exec --provider openai-compatible --api-key dummy --base-url http://localh
 | `match_rules.path_prefix` | string | No | Route requests by path prefix |
 | `match_rules.default` | boolean | No | Set as default backend |
 
+Top-level optional fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `log_body` | boolean | `false` | Write per-request converted/debug bodies |
+| `conversation_ttl_seconds` | integer | `7200` | Expiry for in-memory `previous_response_id` history |
+
 ### Match Rules
 
 Requests are routed based on `match_rules`:
@@ -141,20 +149,38 @@ The proxy handles the Responses API format at the root path:
 ### GLM
 
 - API path: `/chat/completions` (not `/v1/chat/completions`)
-- Removes `tools` and `tool_choice` from requests (not supported)
-- Converts `developer` role to `user`
+- Keeps function `tools`
+- Downgrades `tool_choice` to `auto`
+- Converts `developer` role to `system`
 - Flattens content array to string
 
 ### MiniMax
 
-- Converts `developer` role to `user`
-- Flattens content array to string
+- Converts `developer` role to `system`
+- Keeps content arrays for the OpenAI-compatible endpoint
+- Uses `max_completion_tokens`
 - Ensures response content is string format
 
-### Kimi / DeepSeek
+### Kimi
 
-- Fully OpenAI Chat API compatible
-- No special transformation needed
+- Converts `developer` role to `system`
+- Keeps content arrays
+- Uses `max_completion_tokens`
+- Downgrades `tool_choice` to `auto`
+
+### DeepSeek
+
+- Converts `developer` role to `system`
+- Keeps function tools and `tool_choice`
+- Uses `max_tokens`
+- Maps Responses reasoning effort to DeepSeek-supported values
+
+### Built-in Responses tools
+
+Responses built-ins such as `web_search_preview`, `file_search`, and
+`code_interpreter` are degraded to Chat API function tools. This preserves the
+wire shape for Codex/tool-call loops, but it is not equivalent to OpenAI's
+server-side built-in tool execution.
 
 ## Monitoring
 
@@ -167,6 +193,11 @@ Logs are written to the configured `log_dir`:
 ├── codex-convert-proxy.log
 └── error.log
 ```
+
+Request/response body dumps are disabled by default. Set `log_body: true` only
+for local debugging; dumps use per-request filenames such as
+`{request_id}.converted_request.json` to avoid concurrent overwrite, and failed
+conversion request bodies are written only under the same flag.
 
 ### OpenTelemetry
 
@@ -203,8 +234,14 @@ src/
 ├── lib.rs               # Library exports
 ├── config.rs            # Configuration loading
 ├── proxy/
-│   └── proxy_impl.rs    # Pingora ProxyHttp implementation
+│   ├── filters.rs       # Thin Pingora ProxyHttp orchestration
+│   ├── routing.rs       # Backend selection and request rewriting
+│   ├── request_body.rs  # Responses request buffering/conversion
+│   ├── response_body.rs # Chat response conversion
+│   ├── error_response.rs # JSON/SSE error helpers
+│   └── context_store.rs # In-memory previous_response_id store
 ├── providers/
+│   ├── capabilities.rs  # Provider capability/extension policy
 │   ├── trait_.rs        # Provider trait definition
 │   ├── glm.rs           # GLM provider
 │   ├── kimi.rs          # Kimi/Moonshot provider
@@ -224,6 +261,13 @@ src/
 ├── logger.rs            # Logging configuration
 └── error.rs             # Error types
 ```
+
+The proxy layer owns HTTP concerns only. Protocol conversion lives under
+`convert/`, provider modules declare capabilities plus small extensions, and
+streaming state stores only incremental stream accumulation. The conversation
+store is intentionally in-memory, backend-namespaced, capped by LRU, and expires
+entries after two hours by default; restart or multi-process deployments do not
+share history.
 
 ## License
 

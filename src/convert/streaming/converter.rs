@@ -1,6 +1,7 @@
 //! Core conversion logic: Chat SSE chunks to Responses API stream events.
 
 use crate::error::ConversionError;
+use crate::convert::ResponseRequestContext;
 use crate::types::chat_api::{ChatStreamChunk, Content, ToolCallDelta};
 
 use super::events::ResponseStreamEvent;
@@ -13,6 +14,7 @@ use super::super::util::{
 pub fn chat_chunk_to_response_events(
     chunk: &ChatStreamChunk,
     state: &mut StreamState,
+    request_context: Option<&ResponseRequestContext>,
 ) -> Result<Vec<ResponseStreamEvent>, ConversionError> {
     let mut events = Vec::new();
     let id = state.response_id.clone();
@@ -26,14 +28,14 @@ pub fn chat_chunk_to_response_events(
             model: model.to_string(),
             status: "in_progress".to_string(),
             created_at,
-            request_context: state.request_context.clone(),
+            request_context: request_context.cloned(),
         });
         events.push(ResponseStreamEvent::InProgress {
             id: id.to_string(),
             model: model.to_string(),
             status: "in_progress".to_string(),
             created_at,
-            request_context: state.request_context.clone(),
+            request_context: request_context.cloned(),
         });
         state.emit.is_first_chunk = false;
     }
@@ -222,7 +224,7 @@ pub fn chat_chunk_to_response_events(
                         state.indices.next_output_index += 1;
                         let func_id = format!("func_{}_{}", func_output_index, state.response_id);
                         let initial_name = tc.function.name.clone().unwrap_or_default();
-                        let item_type = map_tool_name_to_stream_item_type(&initial_name, state.request_context.as_ref());
+                        let item_type = map_tool_name_to_stream_item_type(&initial_name, request_context);
                         tracing::debug!("[TOOL_CALL] Creating new tool call: func_id={}, output_index={}", func_id, func_output_index);
                         let name_for_item = if initial_name.is_empty() { None } else { Some(initial_name.clone()) };
                         events.push(ResponseStreamEvent::OutputItemAdded {
@@ -464,8 +466,8 @@ mod tests {
             usage: None,
         };
 
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
-        let events = chat_chunk_to_response_events(&chunk, &mut state).unwrap();
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
+        let events = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
 
         assert!(events.iter().any(|e| matches!(e, ResponseStreamEvent::Created { .. })));
         assert!(events.iter().any(|e| matches!(e, ResponseStreamEvent::InProgress { .. })));
@@ -502,8 +504,8 @@ mod tests {
             usage: None,
         };
 
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
-        let _ = chat_chunk_to_response_events(&chunk, &mut state);
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
+        let _ = chat_chunk_to_response_events(&chunk, &mut state, None);
 
         assert!(!state.tool_calls.current.is_empty());
         let tc = state.tool_calls.current.first().unwrap();
@@ -574,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_finish_reason_content_filter_marks_incomplete() {
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
         let chunk = ChatStreamChunk {
             id: Some("chat_123".to_string()),
             object: Some("chat.completion.chunk".to_string()),
@@ -594,14 +596,14 @@ mod tests {
             }],
             usage: None,
         };
-        let _ = chat_chunk_to_response_events(&chunk, &mut state).unwrap();
+        let _ = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
         assert_eq!(state.emit.final_status, "incomplete");
         assert_eq!(state.emit.incomplete_reason.as_deref(), Some("content_filter"));
     }
 
     #[test]
     fn test_refusal_delta_emits_refusal_event() {
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
         let chunk = ChatStreamChunk {
             id: Some("chat_123".to_string()),
             object: Some("chat.completion.chunk".to_string()),
@@ -621,7 +623,7 @@ mod tests {
             }],
             usage: None,
         };
-        let events = chat_chunk_to_response_events(&chunk, &mut state).unwrap();
+        let events = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
         assert!(events
             .iter()
             .any(|e| matches!(e, ResponseStreamEvent::RefusalDelta { .. })));
@@ -629,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_legacy_function_call_delta_supported() {
-        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string(), None);
+        let mut state = StreamState::new("chat_123".to_string(), "gpt-4o".to_string());
         let chunk = ChatStreamChunk {
             id: Some("chat_123".to_string()),
             object: Some("chat.completion.chunk".to_string()),
@@ -652,7 +654,7 @@ mod tests {
             }],
             usage: None,
         };
-        let _ = chat_chunk_to_response_events(&chunk, &mut state).unwrap();
+        let _ = chat_chunk_to_response_events(&chunk, &mut state, None).unwrap();
         assert!(!state.tool_calls.completed.is_empty());
     }
 }

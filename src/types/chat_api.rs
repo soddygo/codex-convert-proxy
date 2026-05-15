@@ -23,6 +23,8 @@ pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
@@ -64,6 +66,21 @@ pub struct ChatRequest {
     /// Audio output configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<serde_json::Value>,
+    /// Provider-specific extension fields, flattened into the request body.
+    ///
+    /// Only conversion code should populate this via controlled provider
+    /// extensions so standard Chat fields cannot be overwritten accidentally.
+    #[serde(flatten)]
+    pub(crate) extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl ChatRequest {
+    pub(crate) fn apply_provider_extensions(
+        &mut self,
+        extensions: crate::providers::ProviderExtensions,
+    ) {
+        self.extra.extend(extensions.into_fields());
+    }
 }
 
 /// Stream options for Chat API.

@@ -33,12 +33,13 @@ pub struct ResponseRequestContext {
     pub truncation: Option<String>,
     pub user: Option<String>,
     pub metadata: Option<HashMap<String, serde_json::Value>>,
+    #[serde(skip)]
+    pub proxy_tool_map: HashMap<String, serde_json::Value>,
 }
 
 impl From<&ResponseRequest> for ResponseRequestContext {
     fn from(req: &ResponseRequest) -> Self {
-        let mut metadata = req.metadata.clone().unwrap_or_default();
-        let tool_map: serde_json::Map<String, serde_json::Value> = req
+        let proxy_tool_map: HashMap<String, serde_json::Value> = req
             .tools
             .iter()
             .filter_map(|t| {
@@ -54,12 +55,6 @@ impl From<&ResponseRequest> for ResponseRequestContext {
                 })
             })
             .collect();
-        if !tool_map.is_empty() {
-            metadata.insert(
-                "x_proxy_tool_map".to_string(),
-                serde_json::Value::Object(tool_map),
-            );
-        }
 
         Self {
             instructions: req.instructions.clone(),
@@ -75,11 +70,8 @@ impl From<&ResponseRequest> for ResponseRequestContext {
             top_p: req.top_p,
             truncation: req.truncation.clone(),
             user: req.user.clone(),
-            metadata: if metadata.is_empty() {
-                None
-            } else {
-                Some(metadata)
-            },
+            metadata: req.metadata.clone().filter(|m| !m.is_empty()),
+            proxy_tool_map,
         }
     }
 }

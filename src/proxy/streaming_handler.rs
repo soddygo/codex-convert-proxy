@@ -9,6 +9,7 @@ use tracing::{debug, error, warn};
 
 use crate::convert::{chat_chunk_to_response_events, event_to_sse, ResponseStreamEvent};
 use crate::providers::Provider;
+use crate::proxy::error_response::streaming_error_sse;
 use crate::proxy::context_store::{ConversationSnapshot, ConversationStore};
 use crate::types::chat_api::{ChatMessage, Content, FunctionCall, MessageRole, ToolCall};
 use crate::types::chat_api::ChatStreamChunk;
@@ -138,7 +139,8 @@ impl<'a> StreamingResponseHandler<'a> {
                     );
                     state.emit.is_completed = true;
                 } else {
-                    let response_obj = state.build_response_object();
+                    let response_obj = state
+                        .build_response_object(self.ctx.response_request_context.as_ref());
                     if let Some(mut messages) = self.ctx.follow_up.pending_conversation_messages.clone() {
                         let assistant_tool_calls: Vec<ToolCall> = state
                             .tool_calls
@@ -176,6 +178,7 @@ impl<'a> StreamingResponseHandler<'a> {
                             },
                         });
                         self.conversation_store.insert(
+                            self.ctx.route.provider_name.as_deref().unwrap_or("unknown"),
                             response_obj.id.clone(),
                             ConversationSnapshot {
                                 instructions: self.ctx.follow_up.pending_instructions.clone(),
@@ -231,7 +234,11 @@ impl<'a> StreamingResponseHandler<'a> {
             // Update usage from this chunk
             state.update_usage(chunk);
 
-            match chat_chunk_to_response_events(chunk, state) {
+            match chat_chunk_to_response_events(
+                chunk,
+                state,
+                self.ctx.response_request_context.as_ref(),
+            ) {
                 Ok(events) => {
                     let mut sse_data = String::new();
                     for event in &events {
@@ -245,6 +252,9 @@ impl<'a> StreamingResponseHandler<'a> {
                 }
                 Err(e) => {
                     error!("Failed to convert stream chunk: {}", e);
+                    let seq = state.take_sequence_number();
+                    converted_chunks.push(streaming_error_sse(e, seq));
+                    state.emit.is_completed = true;
                 }
             }
         }

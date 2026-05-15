@@ -2,8 +2,10 @@
 
 use tracing::info;
 
+use super::capabilities::{ProviderCapabilities, ProviderExtensions};
 use crate::error::ConversionError;
-use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use crate::types::chat_api::{ChatResponse, ChatStreamChunk};
+use crate::convert::ResponseRequestContext;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -82,6 +84,18 @@ pub trait Provider: Send + Sync + 'static {
         model
     }
 
+    /// Provider capability matrix used by the generic converter before
+    /// provider-specific request hooks run.
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
+
+    /// Normalize reasoning effort values that are still represented by a
+    /// standard Chat field.
+    fn normalize_reasoning_effort(&self, effort: Option<String>) -> Option<String> {
+        effort
+    }
+
     /// Get the chat completions path for this provider.
     ///
     /// Returns the endpoint path **without** the version prefix, e.g.
@@ -99,12 +113,13 @@ pub trait Provider: Send + Sync + 'static {
         "/chat/completions".to_string()
     }
 
-    /// Transform request before sending to provider.
-    ///
-    /// This is called after the standard conversion but before sending
-    /// to the upstream provider. Providers can modify the request to
-    /// handle API differences.
-    fn transform_request(&self, _request: &mut ChatRequest) {}
+    /// Provider-specific extra request fields.
+    fn provider_extensions(
+        &self,
+        _context: &ResponseRequestContext,
+    ) -> Result<ProviderExtensions, ConversionError> {
+        Ok(ProviderExtensions::default())
+    }
 
     /// Transform response after receiving from provider.
     ///
