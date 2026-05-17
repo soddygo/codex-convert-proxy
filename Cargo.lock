@@ -7309,6 +7309,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "unicode-segmentation",
  "uuid",
