@@ -9,9 +9,9 @@ pub use messages::{convert_input_to_messages, extract_content};
 pub use tools::{convert_tool_choice, convert_tools};
 
 use crate::constants::MIN_MAX_TOKENS;
-use crate::convert::ResponseRequestContext;
 use crate::error::ConversionError;
-use crate::providers::{Provider, TokenLimitField};
+use crate::providers::adapter::TokenLimitField;
+use crate::providers::Provider;
 use crate::types::chat_api::{ChatRequest, StreamOptions};
 use crate::types::response_api::{ResponseRequest, ResponseTextConfig};
 use tracing::{debug, warn};
@@ -55,9 +55,8 @@ pub fn response_to_chat(
     model_override: Option<&str>,
     _tool_priority: ToolPriority,
 ) -> Result<ChatRequest, ConversionError> {
-    let request_context = ResponseRequestContext::from(&response_req);
-    let capabilities = provider.capabilities();
-    let enforce_tool_result_adjacency = capabilities.supports_tools;
+    let quirks = &provider.config().chat_quirks;
+    let enforce_tool_result_adjacency = quirks.supports_tools;
     let (messages, extracted_tools) = convert_input_to_messages(
         response_req.input,
         response_req.instructions,
@@ -90,7 +89,7 @@ pub fn response_to_chat(
     //   schema; serializer skips when None. We filter empty to None to mirror Chat API idiom.
     // tool_choice: pass through "none" honoring user intent (spec allows "none" mode).
     let token_limit = response_req.max_output_tokens.or(response_req.max_tokens);
-    let (max_tokens, max_completion_tokens) = match capabilities.token_limit_field {
+    let (max_tokens, max_completion_tokens) = match quirks.token_limit_field {
         TokenLimitField::MaxTokens => (token_limit, None),
         TokenLimitField::MaxCompletionTokens => (None, token_limit),
     };
@@ -121,12 +120,10 @@ pub fn response_to_chat(
         n: None,
         stop: None,
         response_format,
-        reasoning_effort: provider.normalize_reasoning_effort(
-            response_req
-                .reasoning
-                .as_ref()
-                .and_then(|r| r.effort.clone()),
-        ),
+        reasoning_effort: response_req
+            .reasoning
+            .as_ref()
+            .and_then(|r| r.effort.clone()),
         parallel_tool_calls: response_req.parallel_tool_calls,
         seed: None,
         service_tier: None,
@@ -159,10 +156,7 @@ pub fn response_to_chat(
         chat_req.max_completion_tokens = Some(MIN_MAX_TOKENS);
     }
 
-    capabilities.sanitize_request(&mut chat_req);
     provider.sanitize_request(&mut chat_req);
-    let extensions = provider.provider_extensions(&request_context)?;
-    chat_req.apply_provider_extensions(extensions);
 
     debug!(
         "[REQUEST_CONVERT] converted request: model={}, messages={}, tools={}",
@@ -216,7 +210,7 @@ mod tests {
         let mut request = make_request(InputItemOrString::String("Hello".to_string()));
         request.instructions = Some("You are a helpful assistant.".to_string());
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         let first = chat_req.messages.first().unwrap();
@@ -243,7 +237,7 @@ mod tests {
             tools: None,
         }]));
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         let msg = chat_req.messages.first().unwrap();
@@ -284,7 +278,7 @@ mod tests {
             },
         ]));
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
@@ -314,7 +308,7 @@ mod tests {
             tools: None,
         }]));
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.messages.len(), 2);
 
@@ -375,7 +369,7 @@ mod tests {
             },
         ]));
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         assert_eq!(chat_req.messages.len(), 2);
@@ -436,7 +430,7 @@ mod tests {
             },
         ]));
 
-        let provider = GLMProvider;
+        let provider = GLMProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.messages.len(), 2);
         assert_eq!(chat_req.messages[0].role, MessageRole::Assistant);
@@ -450,7 +444,7 @@ mod tests {
         let mut request = make_request(InputItemOrString::String("Hello".to_string()));
         request.max_output_tokens = Some(8);
 
-        let provider = GLMProvider;
+        let provider = GLMProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.max_tokens, Some(16));
         assert_eq!(chat_req.max_completion_tokens, None);
@@ -459,8 +453,8 @@ mod tests {
     #[test]
     fn test_kimi_and_minimax_use_max_completion_tokens() {
         for provider in [
-            Box::new(crate::providers::kimi::KimiProvider) as Box<dyn Provider>,
-            Box::new(crate::providers::minimax::MiniMaxProvider) as Box<dyn Provider>,
+            Box::new(crate::providers::kimi::KimiProvider::new()) as Box<dyn Provider>,
+            Box::new(crate::providers::minimax::MiniMaxProvider::new()) as Box<dyn Provider>,
         ] {
             let mut request = make_request(InputItemOrString::String("Hello".to_string()));
             request.max_output_tokens = Some(8);
@@ -472,12 +466,15 @@ mod tests {
     }
 
     #[test]
-    fn test_domestic_providers_convert_developer_role_to_system() {
+    fn test_developer_role_preserved_in_chat_request() {
+        // Developer→System role conversion now happens in the adapter's
+        // build_message(), not in response_to_chat(). The ChatRequest
+        // preserves the original role for adapter-level processing.
         for provider in [
-            Box::new(crate::providers::glm::GLMProvider) as Box<dyn Provider>,
-            Box::new(crate::providers::kimi::KimiProvider) as Box<dyn Provider>,
-            Box::new(crate::providers::deepseek::DeepSeekProvider) as Box<dyn Provider>,
-            Box::new(crate::providers::minimax::MiniMaxProvider) as Box<dyn Provider>,
+            Box::new(crate::providers::glm::GLMProvider::new()) as Box<dyn Provider>,
+            Box::new(crate::providers::kimi::KimiProvider::new()) as Box<dyn Provider>,
+            Box::new(crate::providers::deepseek::DeepSeekProvider::new()) as Box<dyn Provider>,
+            Box::new(crate::providers::minimax::MiniMaxProvider::new()) as Box<dyn Provider>,
         ] {
             let request = make_request(InputItemOrString::Array(vec![InputItem {
                 id: None,
@@ -493,12 +490,14 @@ mod tests {
             }]));
             let chat_req =
                 response_to_chat(request, provider.as_ref(), None, ToolPriority::Merge).unwrap();
-            assert_eq!(chat_req.messages[0].role, MessageRole::System);
+            assert_eq!(chat_req.messages[0].role, MessageRole::Developer);
         }
     }
 
     #[test]
-    fn test_glm_keeps_tools_and_downgrades_tool_choice_to_auto() {
+    fn test_glm_keeps_tools_and_preserves_tool_choice() {
+        // Tool choice sanitization (e.g. required→auto) now happens in the
+        // adapter's sanitize_tool_choice(), not in response_to_chat().
         let mut request = make_request(InputItemOrString::String("Hello".to_string()));
         request.tools = vec![Tool {
             tool_type: ToolType::Function,
@@ -510,24 +509,26 @@ mod tests {
         }];
         request.tool_choice = ResponseToolChoice::Required;
 
-        let provider = GLMProvider;
+        let provider = GLMProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.tools.as_ref().map(|t| t.len()), Some(1));
         let choice = serde_json::to_value(chat_req.tool_choice.unwrap()).unwrap();
-        assert_eq!(choice, serde_json::json!("auto"));
+        assert_eq!(choice, serde_json::json!("required"));
     }
 
     #[test]
-    fn test_deepseek_reasoning_effort_maps_to_supported_values() {
+    fn test_reasoning_effort_passed_through_raw() {
+        // reasoning_effort mapping (e.g. xhigh→max) now happens in the
+        // adapter's build_request_body(), not in response_to_chat().
         let mut request = make_request(InputItemOrString::String("Hello".to_string()));
         request.reasoning = Some(ResponseReasoning {
             effort: Some("xhigh".to_string()),
             summary: None,
         });
 
-        let provider = crate::providers::deepseek::DeepSeekProvider;
+        let provider = crate::providers::deepseek::DeepSeekProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
-        assert_eq!(chat_req.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(chat_req.reasoning_effort.as_deref(), Some("xhigh"));
     }
 
     #[test]
@@ -542,7 +543,7 @@ mod tests {
             extra: HashMap::new(),
         }];
 
-        let provider = crate::providers::kimi::KimiProvider;
+        let provider = crate::providers::kimi::KimiProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         let tools = chat_req.tools.unwrap_or_default();
         assert_eq!(tools.len(), 1);
@@ -602,7 +603,7 @@ mod tests {
             },
         ]));
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         // Should have 2 messages: user message + tool_search_output (no message emitted for tool_search)
@@ -646,7 +647,7 @@ mod tests {
             },
         ]));
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         assert_eq!(chat_req.messages.len(), 1);
@@ -685,7 +686,7 @@ mod tests {
             extra: HashMap::new(),
         }];
 
-        let provider = crate::providers::minimax::MiniMaxProvider;
+        let provider = crate::providers::minimax::MiniMaxProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
 
         let tools = chat_req.tools.unwrap_or_default();
@@ -717,7 +718,7 @@ mod tests {
             tools: None,
         }]));
 
-        let provider = GLMProvider;
+        let provider = GLMProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert!(!chat_req.messages.is_empty());
         let body = chat_req.messages[0].content.as_text();
@@ -742,7 +743,7 @@ mod tests {
             }),
         });
 
-        let provider = GLMProvider;
+        let provider = GLMProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         let response_format = chat_req
             .response_format
@@ -761,7 +762,7 @@ mod tests {
         });
         request.parallel_tool_calls = Some(false);
 
-        let provider = GLMProvider;
+        let provider = GLMProvider::new();
         let chat_req = response_to_chat(request, &provider, None, ToolPriority::Merge).unwrap();
         assert_eq!(chat_req.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(chat_req.parallel_tool_calls, Some(false));

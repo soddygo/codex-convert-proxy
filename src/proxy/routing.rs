@@ -60,8 +60,9 @@ impl CodexProxy {
         };
         ctx.route.normalized_path = Some(normalized_path.clone());
 
-        let is_conversion = (normalized_path.starts_with("/v1/responses")
-            || normalized_path.starts_with("/responses"))
+        let is_conversion = !self.no_convert
+            && (normalized_path.starts_with("/v1/responses")
+                || normalized_path.starts_with("/responses"))
             && method == "POST";
         ctx.flags.is_conversion_request = is_conversion;
 

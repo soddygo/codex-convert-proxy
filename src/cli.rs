@@ -62,6 +62,10 @@ pub struct ServerArgs {
     /// Log request/response bodies.
     #[arg(long, default_value = "false")]
     pub log_body: bool,
+
+    /// Skip Responses→Chat API request body conversion (pass-through).
+    #[arg(long, default_value = "false")]
+    pub no_convert: bool,
 }
 
 /// Start Codex ACP agent with an embedded conversion proxy.
@@ -69,8 +73,9 @@ pub struct ServerArgs {
 #[derive(Args, Debug, Clone)]
 pub struct AcpArgs {
     /// Provider name (glm, kimi, deepseek, minimax).
+    /// When absent, auto-detected from --model.
     #[arg(short, long, env = "CODEX_CONVERT_PROVIDER")]
-    pub provider: String,
+    pub provider: Option<String>,
 
     /// Upstream Chat Completions-compatible base URL.
     #[arg(short = 'b', long, env = "CODEX_CONVERT_BASE_URL")]
@@ -107,6 +112,10 @@ pub struct AcpArgs {
     /// Remove previous ACP proxy logs in this log directory before startup.
     #[arg(long, default_value = "false")]
     pub clean_log_dir: bool,
+
+    /// Skip Responses→Chat API request body conversion (pass-through).
+    #[arg(long, default_value = "false")]
+    pub no_convert: bool,
 }
 
 /// Personality behavior for Codex ACP mode.
@@ -188,6 +197,7 @@ impl ServerArgs {
         }
         config.log_dir = self.log_dir.to_string_lossy().to_string();
         config.log_body = self.log_body;
+        config.no_convert = self.no_convert;
 
         Ok(config)
     }
@@ -197,12 +207,18 @@ impl ServerArgs {
 impl AcpArgs {
     /// Build the embedded proxy config used by ACP mode.
     pub fn to_proxy_config(&self, listen: impl Into<String>) -> ProxyConfig {
+        let provider_name = self
+            .provider
+            .clone()
+            .unwrap_or_else(|| provider_name_from_model(&self.model));
+
         ProxyConfig {
             listen: listen.into(),
             log_dir: self.log_dir.to_string_lossy().to_string(),
             log_body: self.log_body,
+            no_convert: self.no_convert,
             backends: vec![BackendConfig {
-                name: self.provider.clone(),
+                name: provider_name,
                 url: self.base_url.clone(),
                 api_key: self.api_key.clone(),
                 protocol: "openai".to_string(),
@@ -215,6 +231,36 @@ impl AcpArgs {
             ..Default::default()
         }
     }
+}
+
+/// Derive a provider name from the model when --provider is not set.
+/// Follows genai's AdapterKind::from_model() patterns.
+fn provider_name_from_model(model: &str) -> String {
+    let m = model.to_ascii_lowercase();
+    if m.starts_with("deepseek-") {
+        "deepseek"
+    } else if m.starts_with("moonshot-") {
+        "moonshot"
+    } else if m.starts_with("mimo-") {
+        "mimo"
+    } else if m.starts_with("grok") {
+        "xai"
+    } else if m.starts_with("glm") {
+        "zhipu"
+    } else if m.starts_with("claude") {
+        "anthropic"
+    } else if m.starts_with("gemini") {
+        "gemini"
+    } else if m.starts_with("command") || m.starts_with("embed-") {
+        "cohere"
+    } else if m.contains("minimax") {
+        "minimax"
+    } else if m.contains("fireworks") {
+        "fireworks"
+    } else {
+        "openai"
+    }
+    .to_string()
 }
 
 /// Resolved configuration that combines file and CLI args.

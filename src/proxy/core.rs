@@ -16,6 +16,8 @@ pub struct CodexProxy {
     pub providers: HashMap<String, Arc<dyn Provider>>,
     /// Whether to log request/response bodies.
     pub log_body: bool,
+    /// Whether to skip Responses→Chat API body conversion (pass-through).
+    pub no_convert: bool,
     /// Directory for debug log files.
     pub log_dir: std::path::PathBuf,
     /// In-memory conversation store for previous_response_id expansion.
@@ -34,6 +36,7 @@ impl CodexProxy {
             router,
             providers,
             log_body,
+            false,
             log_dir,
             ConversationStore::DEFAULT_TTL,
         )
@@ -43,6 +46,7 @@ impl CodexProxy {
         router: Arc<BackendRouter>,
         providers: HashMap<String, Arc<dyn Provider>>,
         log_body: bool,
+        no_convert: bool,
         log_dir: std::path::PathBuf,
         conversation_ttl: Duration,
     ) -> Self {
@@ -50,6 +54,7 @@ impl CodexProxy {
             router,
             providers,
             log_body,
+            no_convert,
             log_dir,
             conversation_store: Arc::new(ConversationStore::with_ttl(conversation_ttl)),
         }

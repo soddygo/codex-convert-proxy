@@ -26,14 +26,15 @@ pub fn run_acp(args: AcpArgs) -> anyhow::Result<()> {
         model: Some(args.model.clone()),
         base_url: Some(codex_base_url.clone()),
         api_key: Some(args.api_key.clone()),
-        provider_id: Some(args.provider.clone()),
-        provider_name: Some(args.provider.clone()),
+        provider_id: args.provider.clone(),
+        provider_name: args.provider.clone(),
         model_context_window: Some(args.context_window),
         personality_enabled: args.personality.as_runtime_override(),
+        wire_api: Some("chat".to_string()),
     };
 
     eprintln!("Starting Codex ACP with embedded conversion proxy");
-    eprintln!("  Provider: {}", args.provider);
+    eprintln!("  Provider: {}", args.provider.as_deref().unwrap_or("(auto)"));
     eprintln!("  Model: {}", args.model);
     eprintln!("  Upstream: {}", args.base_url);
     eprintln!("  Embedded proxy: http://{proxy_listen}");

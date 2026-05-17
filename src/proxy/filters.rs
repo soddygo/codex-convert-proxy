@@ -233,7 +233,7 @@ mod tests {
         }];
         let router = Arc::new(crate::config::BackendRouter::new(configs).unwrap());
         let mut providers = HashMap::new();
-        providers.insert("glm".to_string(), Arc::new(GLMProvider) as Arc<dyn Provider>);
+        providers.insert("glm".to_string(), Arc::new(GLMProvider::new()) as Arc<dyn Provider>);
         CodexProxy::new(router, providers, false, std::path::PathBuf::from("logs"))
     }
 
@@ -252,7 +252,7 @@ mod tests {
         }];
         let router = Arc::new(crate::config::BackendRouter::new(configs).unwrap());
         let mut providers = HashMap::new();
-        providers.insert("glm".to_string(), Arc::new(GLMProvider) as Arc<dyn Provider>);
+        providers.insert("glm".to_string(), Arc::new(GLMProvider::new()) as Arc<dyn Provider>);
         let proxy = CodexProxy::new(router, providers, true, std::path::PathBuf::from("logs"));
         assert!(proxy.log_body);
     }

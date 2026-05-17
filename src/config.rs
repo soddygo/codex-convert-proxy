@@ -241,6 +241,9 @@ pub struct ProxyConfig {
     /// Whether to log request/response bodies.
     #[serde(default = "default_log_body")]
     pub log_body: bool,
+    /// Skip Responses→Chat API body conversion (pass-through).
+    #[serde(default = "default_no_convert")]
+    pub no_convert: bool,
     /// In-memory previous_response_id TTL in seconds.
     #[serde(default = "default_conversation_ttl_seconds")]
     pub conversation_ttl_seconds: u64,
@@ -264,12 +267,17 @@ fn default_conversation_ttl_seconds() -> u64 {
     2 * 60 * 60
 }
 
+fn default_no_convert() -> bool {
+    false
+}
+
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
             log_dir: default_log_dir(),
             log_body: default_log_body(),
+            no_convert: default_no_convert(),
             conversation_ttl_seconds: default_conversation_ttl_seconds(),
             backends: Vec::new(),
         }

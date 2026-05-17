@@ -74,6 +74,7 @@ pub fn build_proxy(config: ProxyConfig) -> anyhow::Result<CodexProxy> {
         router,
         providers,
         config.log_body,
+        config.no_convert,
         log_dir,
         Duration::from_secs(config.conversation_ttl_seconds),
     ))

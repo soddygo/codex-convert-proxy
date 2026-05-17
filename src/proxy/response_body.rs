@@ -12,7 +12,6 @@ use crate::proxy::context::ProxyContext;
 use crate::proxy::context_store::ConversationSnapshot;
 use crate::proxy::core::CodexProxy;
 use crate::proxy::streaming_handler::StreamingResponseHandler;
-use crate::types::chat_api::ChatResponse;
 
 impl CodexProxy {
     pub(crate) fn handle_response_filter(
@@ -112,8 +111,11 @@ impl CodexProxy {
                     .as_ref()
                     .and_then(|name| self.get_provider(name));
 
+                let adapter = provider.as_ref().map(|p| p.protocol_adapter());
+                let config = provider.as_ref().map(|p| p.config());
+
                 let mut handler =
-                    StreamingResponseHandler::new(ctx, provider, self.conversation_store.clone());
+                    StreamingResponseHandler::new(ctx, adapter, config, self.conversation_store.clone());
 
                 if let Some(converted) = handler.process_stream_frame() {
                     *body = Some(Bytes::from(converted));
@@ -165,24 +167,42 @@ impl CodexProxy {
                 format!("upstream response is not valid UTF-8: {e}"),
             )
         })?;
-        let mut chat_resp: ChatResponse = serde_json::from_str(text).map_err(|e| {
+        let raw_body: serde_json::Value = serde_json::from_str(text).map_err(|e| {
             error!(
-                "[RESPONSE_BODY] failed to parse upstream ChatResponse: {}",
+                "[RESPONSE_BODY] failed to parse upstream response body: {}",
                 e
             );
             pingora_core::Error::explain(
                 pingora_core::ErrorType::HTTPStatus(502),
-                format!("upstream response not a valid Chat completion: {e}"),
+                format!("upstream response not valid JSON: {e}"),
             )
         })?;
-        if let Some(provider) = ctx
+        let provider = ctx
             .route
             .provider_name
             .as_ref()
-            .and_then(|name| self.get_provider(name))
-        {
-            provider.transform_response(&mut chat_resp);
-        }
+            .and_then(|name| self.get_provider(name));
+        let chat_resp = match provider.as_ref() {
+            Some(p) => {
+                let adapter = p.protocol_adapter();
+                adapter.parse_response(&raw_body, p.config()).map_err(|e| {
+                    error!("[RESPONSE_BODY] adapter parse_response failed: {}", e);
+                    pingora_core::Error::explain(
+                        pingora_core::ErrorType::HTTPStatus(502),
+                        format!("response parse failed: {e}"),
+                    )
+                })?
+            }
+            None => {
+                serde_json::from_value(raw_body).map_err(|e| {
+                    error!("[RESPONSE_BODY] failed to parse as ChatResponse: {}", e);
+                    pingora_core::Error::explain(
+                        pingora_core::ErrorType::HTTPStatus(502),
+                        format!("upstream response not a valid Chat completion: {e}"),
+                    )
+                })?
+            }
+        };
         let assistant_message = chat_resp.choices.first().map(|c| c.message.clone());
         let response_obj =
             crate::convert::chat_to_response_with_context(

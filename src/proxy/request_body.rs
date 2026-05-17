@@ -74,7 +74,9 @@ impl CodexProxy {
             .map(|m| m.content.as_text());
         ctx.follow_up.pending_conversation_messages = Some(chat_req.messages.clone());
 
-        serde_json::to_vec(&chat_req).map_err(ConversionError::from)
+        let adapter = provider.protocol_adapter();
+        let body_value = adapter.build_request_body(&chat_req, provider.config())?;
+        serde_json::to_vec(&body_value).map_err(ConversionError::from)
     }
 }
 

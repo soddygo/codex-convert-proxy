@@ -56,7 +56,7 @@ async fn minimax_live_single_system_with_simple_tool_reports_current_behavior() 
 
 #[tokio::test]
 #[ignore = "calls the live MiniMax API using local config.json"]
-async fn minimax_live_raw_multi_system_reproduces_2013() -> TestResult {
+async fn minimax_live_merged_system_messages_succeeds() -> TestResult {
     let backend = load_minimax_backend()?;
     let provider = MiniMaxProvider::new();
     let mut chat = build_raw_chat_request(&backend, vec![
@@ -64,13 +64,13 @@ async fn minimax_live_raw_multi_system_reproduces_2013() -> TestResult {
         ("system", "Reply in Chinese."),
         ("user", "只回复两个字：你好"),
     ]);
-    provider.capabilities().sanitize_request(&mut chat);
+    provider.sanitize_request(&mut chat);
+
+    // After sanitize_request, multiple system messages should be merged into one.
+    assert_eq!(chat.messages.iter().filter(|m| m.role == MessageRole::System).count(), 1);
 
     let body = send_chat_request(&backend, &provider, &chat).await?;
-    assert!(
-        body.contains("invalid chat setting (2013)") || body.contains("\"http_code\":\"400\""),
-        "expected MiniMax to reject multi-system chat setting, got: {body}"
-    );
+    assert_successful_minimax_body(&body);
     Ok(())
 }
 
@@ -183,10 +183,12 @@ async fn send_chat_request(
         backend.url.trim_end_matches('/'),
         provider.chat_completions_path().trim_start_matches('/')
     );
+    let adapter = provider.protocol_adapter();
+    let body = adapter.build_request_body(chat, provider.config())?;
     let response = reqwest::Client::new()
         .post(url)
         .bearer_auth(&backend.api_key)
-        .json(chat)
+        .json(&body)
         .send()
         .await?;
     Ok(response.text().await?)

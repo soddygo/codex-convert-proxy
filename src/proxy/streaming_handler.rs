@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tracing::{debug, error, warn};
 
 use crate::convert::{chat_chunk_to_response_events, event_to_sse, ResponseStreamEvent};
-use crate::providers::Provider;
+use crate::providers::adapter::{ProtocolAdapter, ProviderConfig};
 use crate::proxy::error_response::streaming_error_sse;
 use crate::proxy::context_store::{ConversationSnapshot, ConversationStore};
 use crate::types::chat_api::{ChatMessage, Content, FunctionCall, MessageRole, ToolCall};
@@ -22,8 +22,10 @@ use super::context::ProxyContext;
 pub struct StreamingResponseHandler<'a> {
     /// Reference to proxy context for state access.
     ctx: &'a mut ProxyContext,
-    /// Shared provider handle for transformations.
-    provider: Option<Arc<dyn Provider>>,
+    /// Protocol adapter for parsing stream chunks with provider-specific quirks.
+    adapter: Option<&'a dyn ProtocolAdapter>,
+    /// Provider config for quirk-aware parsing.
+    config: Option<&'a ProviderConfig>,
     /// Conversation store for persisting completed turns.
     conversation_store: Arc<ConversationStore>,
 }
@@ -32,12 +34,14 @@ impl<'a> StreamingResponseHandler<'a> {
     /// Create a new streaming handler.
     pub fn new(
         ctx: &'a mut ProxyContext,
-        provider: Option<Arc<dyn Provider>>,
+        adapter: Option<&'a dyn ProtocolAdapter>,
+        config: Option<&'a ProviderConfig>,
         conversation_store: Arc<ConversationStore>,
     ) -> Self {
         Self {
             ctx,
-            provider,
+            adapter,
+            config,
             conversation_store,
         }
     }
@@ -81,20 +85,33 @@ impl<'a> StreamingResponseHandler<'a> {
                 continue;
             }
 
-            // Parse as ChatStreamChunk
-            match serde_json::from_str::<ChatStreamChunk>(&event.data) {
-                Ok(chunk) => {
+            // Parse as ChatStreamChunk via adapter (applies quirks like flatten_response)
+            let chunk_result = match (self.adapter, self.config) {
+                (Some(adapter), Some(config)) => {
+                    match serde_json::from_str::<serde_json::Value>(&event.data) {
+                        Ok(json) => adapter.parse_stream_chunk(&json, config),
+                        Err(e) => {
+                            debug!("[STREAM_PARSE] Failed to parse JSON: {}", e);
+                            continue;
+                        }
+                    }
+                }
+                _ => match serde_json::from_str::<ChatStreamChunk>(&event.data) {
+                    Ok(chunk) => Ok(chunk),
+                    Err(e) => {
+                        debug!("[STREAM_PARSE] Failed to parse JSON: {}", e);
+                        continue;
+                    }
+                },
+            };
+
+            match chunk_result {
+                Ok(mut chunk) => {
                     self.ctx.diagnostics.stream_chunks_parsed += 1;
-                    let mut chunk = chunk;
-
-                    // Apply provider transformation
-                    self.apply_provider_transform(&mut chunk);
-
-                    // Convert to Response API events
                     self.convert_chunk_to_events(&mut chunk, &mut converted_chunks);
                 }
                 Err(e) => {
-                    debug!("[STREAM_PARSE] Failed to parse JSON: {}", e);
+                    debug!("[STREAM_PARSE] Adapter parse failed: {}", e);
                 }
             }
         }
@@ -215,13 +232,6 @@ impl<'a> StreamingResponseHandler<'a> {
             }
 
         converted_chunks
-    }
-
-    /// Apply provider-specific transformation to stream chunk.
-    fn apply_provider_transform(&mut self, chunk: &mut ChatStreamChunk) {
-        if let Some(ref provider) = self.provider {
-            provider.transform_stream_chunk(chunk);
-        }
     }
 
     /// Convert a ChatStreamChunk to Response API events.

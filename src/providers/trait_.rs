@@ -2,10 +2,8 @@
 
 use tracing::info;
 
-use super::capabilities::{ProviderCapabilities, ProviderExtensions};
 use crate::error::ConversionError;
-use crate::convert::ResponseRequestContext;
-use crate::types::chat_api::{ChatRequest, ChatResponse, ChatStreamChunk};
+use crate::types::chat_api::ChatRequest;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -25,6 +23,21 @@ fn get_registry() -> &'static HashMap<&'static str, ProviderFactory> {
         m.insert("kimi", kimi_factory as ProviderFactory);
         m.insert("deepseek", deepseek_factory as ProviderFactory);
         m.insert("minimax", minimax_factory as ProviderFactory);
+        m.insert("openai", openai_factory as ProviderFactory);
+        m.insert("groq", groq_factory as ProviderFactory);
+        m.insert("together", together_factory as ProviderFactory);
+        m.insert("fireworks", fireworks_factory as ProviderFactory);
+        m.insert("nebius", nebius_factory as ProviderFactory);
+        m.insert("xai", xai_factory as ProviderFactory);
+        m.insert("aliyun", aliyun_factory as ProviderFactory);
+        m.insert("baidu", baidu_factory as ProviderFactory);
+        m.insert("mimo", mimo_factory as ProviderFactory);
+        m.insert("ollama", ollama_factory as ProviderFactory);
+        m.insert("ollama_cloud", ollama_cloud_factory as ProviderFactory);
+        m.insert("github_copilot", github_copilot_factory as ProviderFactory);
+        m.insert("opencode_go", opencode_go_factory as ProviderFactory);
+        m.insert("bigmodel", bigmodel_factory as ProviderFactory);
+        m.insert("openai_resp", openai_resp_factory as ProviderFactory);
         m
     })
 }
@@ -47,14 +60,62 @@ fn deepseek_factory() -> Arc<dyn Provider> {
 fn minimax_factory() -> Arc<dyn Provider> {
     Arc::new(super::minimax::MiniMaxProvider::new())
 }
+fn openai_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::OpenAiProvider::new())
+}
+fn groq_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::GroqProvider::new())
+}
+fn together_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::TogetherProvider::new())
+}
+fn fireworks_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::FireworksProvider::new())
+}
+fn nebius_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::NebiusProvider::new())
+}
+fn xai_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::XaiProvider::new())
+}
+fn aliyun_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::AliyunProvider::new())
+}
+fn baidu_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::BaiduProvider::new())
+}
+fn mimo_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::MimoProvider::new())
+}
+fn ollama_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::OllamaProvider::new())
+}
+fn ollama_cloud_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::OllamaCloudProvider::new())
+}
+fn github_copilot_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::GitHubCopilotProvider::new())
+}
+fn opencode_go_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::OpenCodeGoProvider::new())
+}
+fn bigmodel_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::BigModelProvider::new())
+}
+fn openai_resp_factory() -> Arc<dyn Provider> {
+    Arc::new(super::openai_compat::OpenAiResponsesProvider::new())
+}
 // ============================================================================
 // Provider Trait
 // ============================================================================
 
+use crate::providers::adapter::{OpenAiChatAdapter, ProtocolAdapter, ProviderConfig};
+
 /// Provider trait for LLM provider-specific transformations.
 ///
-/// Each Chinese LLM provider may have slightly different API requirements
-/// or model name formats that need to be normalized.
+/// Each LLM provider may have slightly different API requirements
+/// that are expressed declaratively via [`ProviderConfig`] and
+/// [`ProtocolAdapter`] (the two-layer design).
 ///
 /// Implementations are expected to be **stateless** so a single instance can
 /// be shared across all requests via `Arc<dyn Provider>`.
@@ -79,21 +140,19 @@ pub trait Provider: Send + Sync + 'static {
         self.name()
     }
 
+    /// Provider configuration — the single source of truth for endpoint,
+    /// auth, protocol, and quirks.
+    fn config(&self) -> &ProviderConfig;
+
+    /// The protocol adapter that builds requests and parses responses
+    /// for this provider's wire protocol.
+    fn protocol_adapter(&self) -> &dyn ProtocolAdapter {
+        &OpenAiChatAdapter
+    }
+
     /// Normalize model name from Responses API to provider's format.
     fn normalize_model(&self, model: String) -> String {
         model
-    }
-
-    /// Provider capability matrix used by the generic converter before
-    /// provider-specific request hooks run.
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::default()
-    }
-
-    /// Normalize reasoning effort values that are still represented by a
-    /// standard Chat field.
-    fn normalize_reasoning_effort(&self, effort: Option<String>) -> Option<String> {
-        effort
     }
 
     /// Get the chat completions path for this provider.
@@ -103,38 +162,12 @@ pub trait Provider: Send + Sync + 'static {
     /// from the backend URL's `base_path` configured in `config.json` and
     /// is prepended automatically during path rewriting in
     /// `upstream_request_filter`.
-    ///
-    /// # Example
-    ///
-    /// Config URL `https://api.moonshot.cn/v1` → `base_path = "/v1"`
-    /// `chat_completions_path() = "/chat/completions"`
-    /// → final path: `/v1/chat/completions`
     fn chat_completions_path(&self) -> String {
-        "/chat/completions".to_string()
+        self.config().chat_path.to_string()
     }
 
-    /// Provider-specific extra request fields.
-    fn provider_extensions(
-        &self,
-        _context: &ResponseRequestContext,
-    ) -> Result<ProviderExtensions, ConversionError> {
-        Ok(ProviderExtensions::default())
-    }
-
-    /// Final provider-specific request normalization after capability sanitization.
+    /// Final provider-specific request normalization (e.g. MiniMax system message merging).
     fn sanitize_request(&self, _request: &mut ChatRequest) {}
-
-    /// Transform response after receiving from provider.
-    ///
-    /// This is called after receiving the response but before converting
-    /// to Responses API format. Providers can normalize response format.
-    fn transform_response(&self, _response: &mut ChatResponse) {}
-
-    /// Transform streaming chunk in real-time.
-    ///
-    /// This is called for each SSE chunk received from the provider.
-    /// Providers can modify chunk content before event conversion.
-    fn transform_stream_chunk(&self, _chunk: &mut ChatStreamChunk) {}
 }
 
 // ============================================================================
@@ -182,19 +215,27 @@ mod tests {
         // Known provider should return the correct provider
         let provider = create_provider("glm").unwrap();
         assert_eq!(provider.name(), "glm");
-        assert_eq!(provider.display_name(), "glm");
 
         let provider = create_provider("kimi").unwrap();
         assert_eq!(provider.name(), "kimi");
-        assert_eq!(provider.display_name(), "kimi");
 
         let provider = create_provider("deepseek").unwrap();
         assert_eq!(provider.name(), "deepseek");
-        assert_eq!(provider.display_name(), "deepseek");
 
         let provider = create_provider("minimax").unwrap();
         assert_eq!(provider.name(), "minimax");
-        assert_eq!(provider.display_name(), "minimax");
+
+        let provider = create_provider("openai").unwrap();
+        assert_eq!(provider.name(), "openai");
+
+        let provider = create_provider("groq").unwrap();
+        assert_eq!(provider.name(), "groq");
+
+        let provider = create_provider("together").unwrap();
+        assert_eq!(provider.name(), "together");
+
+        let provider = create_provider("mimo").unwrap();
+        assert_eq!(provider.name(), "mimo");
     }
 
     #[test]
@@ -237,12 +278,15 @@ mod tests {
 
     #[test]
     fn test_registered_provider_names_excludes_default() {
-        // "default" should NOT appear in registered names — it's a fallback, not a named provider
         let names = registered_provider_names();
-        assert!(!names.contains(&"default"), "default should not be in registered_provider_names");
+        assert!(!names.contains(&"default"));
         assert!(names.contains(&"glm"));
         assert!(names.contains(&"kimi"));
         assert!(names.contains(&"deepseek"));
         assert!(names.contains(&"minimax"));
+        assert!(names.contains(&"openai"));
+        assert!(names.contains(&"groq"));
+        assert!(names.contains(&"xai"));
+        assert!(names.contains(&"ollama"));
     }
 }

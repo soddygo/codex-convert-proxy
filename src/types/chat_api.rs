@@ -71,16 +71,7 @@ pub struct ChatRequest {
     /// Only conversion code should populate this via controlled provider
     /// extensions so standard Chat fields cannot be overwritten accidentally.
     #[serde(flatten)]
-    pub(crate) extra: std::collections::HashMap<String, serde_json::Value>,
-}
-
-impl ChatRequest {
-    pub(crate) fn apply_provider_extensions(
-        &mut self,
-        extensions: crate::providers::ProviderExtensions,
-    ) {
-        self.extra.extend(extensions.into_fields());
-    }
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Stream options for Chat API.
@@ -112,7 +103,7 @@ pub struct ChatMessage {
 }
 
 /// Message role.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,

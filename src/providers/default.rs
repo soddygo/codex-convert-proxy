@@ -10,8 +10,8 @@
 //! keeps the fallback mechanism separate from the user-facing provider
 //! namespace.
 
-use crate::providers::trait_::Provider;
-use crate::types::chat_api::{ChatResponse, ChatStreamChunk};
+use crate::providers::adapter::{OpenAiChatAdapter, ProtocolAdapter, ProviderConfig};
+use crate::providers::Provider;
 
 /// Default provider that makes minimal assumptions.
 ///
@@ -30,12 +30,16 @@ use crate::types::chat_api::{ChatResponse, ChatStreamChunk};
 pub struct DefaultProvider {
     /// The original backend name from config, preserved for diagnostics.
     backend_name: String,
+    config: ProviderConfig,
+    adapter: OpenAiChatAdapter,
 }
 
 impl Default for DefaultProvider {
     fn default() -> Self {
         Self {
             backend_name: "default".to_string(),
+            config: ProviderConfig::default(),
+            adapter: OpenAiChatAdapter,
         }
     }
 }
@@ -49,6 +53,11 @@ impl DefaultProvider {
     pub fn new(backend_name: &str) -> Self {
         Self {
             backend_name: backend_name.to_lowercase(),
+            config: ProviderConfig {
+                name: "default",
+                ..ProviderConfig::default()
+            },
+            adapter: OpenAiChatAdapter,
         }
     }
 }
@@ -66,12 +75,11 @@ impl Provider for DefaultProvider {
         &self.backend_name
     }
 
-    fn chat_completions_path(&self) -> String {
-        // Standard OpenAI-compatible path (without /v1 prefix)
-        "/chat/completions".to_string()
+    fn config(&self) -> &ProviderConfig {
+        &self.config
     }
 
-    fn transform_response(&self, _response: &mut ChatResponse) {}
-
-    fn transform_stream_chunk(&self, _chunk: &mut ChatStreamChunk) {}
+    fn protocol_adapter(&self) -> &dyn ProtocolAdapter {
+        &self.adapter
+    }
 }
