@@ -114,6 +114,21 @@ impl BackendRouter {
         path.starts_with(&with_slash)
     }
 
+    /// Join two URL path segments, ensuring exactly one `/` separator.
+    ///
+    /// Edge cases handled:
+    /// - `("/v1", "chat/completions")` → `"/v1/chat/completions"`
+    /// - `("/v1/", "/chat/completions")` → `"/v1/chat/completions"`
+    /// - `("", "/chat/completions")` → `"/chat/completions"`
+    pub fn join_url_paths(base: &str, path: &str) -> String {
+        let base = base.trim_end_matches('/');
+        let path = path.trim_start_matches('/');
+        if base.is_empty() {
+            return format!("/{path}");
+        }
+        format!("{}/{}", base, path)
+    }
+
     pub fn strip_path_prefix(path: &str, prefix: &str) -> Option<String> {
         if !Self::path_matches_prefix(path, prefix) {
             return None;
@@ -185,11 +200,7 @@ impl BackendRouter {
         };
 
         // Add backend's base_path
-        let new_path = if !info.base_path.is_empty() {
-            format!("{}{}", info.base_path, new_path)
-        } else {
-            new_path
-        };
+        let new_path = Self::join_url_paths(&info.base_path, &new_path);
 
         Some((info, new_path))
     }

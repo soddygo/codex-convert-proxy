@@ -143,11 +143,10 @@ impl CodexProxy {
             normalized_path.to_string()
         };
 
-        let new_path = if !backend.base_path.is_empty() {
-            format!("{}{}", backend.base_path, chat_api_path)
-        } else {
-            chat_api_path
-        };
+        let new_path = crate::config::BackendRouter::join_url_paths(
+            &backend.base_path,
+            &chat_api_path,
+        );
 
         let new_uri_str = if let Some(q) = query {
             format!("{}?{}", new_path, q)
